@@ -1,0 +1,27 @@
+# LLM & Local Inference
+ollama>=0.3.0
+pydantic>=2.7.0
+pydantic-settings>=2.2.0
+python-dotenv>=1.0.1
+
+# Document Ingestion & Parsers
+pymupdf>=1.24.0          # Fast PDF text extraction (fitz)
+python-docx>=1.1.0       # Word documents (.docx)
+openpyxl>=3.1.2          # Excel reading and writing (.xlsx)
+olefile>=0.47            # Pure-Python Word .doc parser without MS Word dependency
+pandas>=2.2.0
+pillow>=10.0.0
+
+# OCR Engine (PaddleOCR)
+paddlepaddle>=2.6.0
+paddleocr>=2.7.0
+
+# Deduplication & Algorithms
+datasketch>=1.6.4
+langdetect>=1.0.9
+pycountry>=23.12.11
+
+# Utilities
+tqdm>=4.66.0
+loguru>=0.7.2
+watchdog>=4.0.0

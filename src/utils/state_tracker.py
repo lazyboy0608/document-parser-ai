@@ -1,0 +1,104 @@
+import json
+import sqlite3
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+
+class StateTracker:
+    """
+    Theo dõi tiến trình xử lý hàng nghìn tài liệu bằng SQLite.
+    Giúp lưu checkpoint, tránh việc chương trình bị gián đoạn phải chạy lại từ đầu.
+    """
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_files (
+                    file_path TEXT PRIMARY KEY,
+                    file_hash TEXT,
+                    status TEXT,
+                    is_duplicate INTEGER DEFAULT 0,
+                    metadata_json TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # Đồng bộ các bản ghi đường dẫn tương đối cũ sang đường dẫn tuyệt đối chuẩn
+            cursor.execute("SELECT file_path, file_hash, status, is_duplicate, metadata_json FROM processed_files")
+            rows = cursor.fetchall()
+            for fp, fhash, st, is_dup, mjson in rows:
+                norm_p = self._norm(fp)
+                if norm_p != fp:
+                    # Nếu bản ghi chuẩn hóa chưa có hoặc đang bị đánh dấu trùng lặp nhầm, ghi đè bằng bản gốc
+                    cursor.execute("SELECT is_duplicate FROM processed_files WHERE file_path = ?", (norm_p,))
+                    existing = cursor.fetchone()
+                    if existing is None or (existing[0] == 1 and is_dup == 0):
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO processed_files (file_path, file_hash, status, is_duplicate, metadata_json) VALUES (?, ?, ?, ?, ?)",
+                            (norm_p, fhash, st, is_dup, mjson),
+                        )
+                    cursor.execute("DELETE FROM processed_files WHERE file_path = ?", (fp,))
+            conn.commit()
+
+    @staticmethod
+    def _norm(file_path: str) -> str:
+        try:
+            return str(Path(file_path).resolve())
+        except Exception:
+            return str(file_path)
+
+    def is_processed(self, file_path: str) -> bool:
+        norm_p = self._norm(file_path)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT status FROM processed_files WHERE file_path = ? OR file_path = ?",
+                (norm_p, str(file_path)),
+            )
+            row = cursor.fetchone()
+            return row is not None and row[0] == "COMPLETED"
+
+    def save_state(self, file_path: str, file_hash: str, status: str, is_duplicate: bool = False, metadata: Optional[Dict[str, Any]] = None):
+        norm_p = self._norm(file_path)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            # Xóa bản ghi đường dẫn tương đối cũ (nếu có) để tránh trùng lặp với đường dẫn tuyệt đối
+            if norm_p != str(file_path):
+                cursor.execute("DELETE FROM processed_files WHERE file_path = ?", (str(file_path),))
+            cursor.execute("""
+                INSERT OR REPLACE INTO processed_files (file_path, file_hash, status, is_duplicate, metadata_json)
+                VALUES (?, ?, ?, ?, ?)
+            """, (norm_p, file_hash, status, 1 if is_duplicate else 0, json.dumps(metadata, ensure_ascii=False) if metadata else None))
+            conn.commit()
+
+    def get_all_completed(self) -> Dict[str, Dict[str, Any]]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_path, is_duplicate, metadata_json FROM processed_files WHERE status = 'COMPLETED'")
+            rows = cursor.fetchall()
+            results = {}
+            for path_str, is_dup, meta_json in rows:
+                norm_p = self._norm(path_str)
+                meta = json.loads(meta_json) if meta_json else {}
+                # Ưu tiên giữ bản ghi không phải "Tài liệu trùng lặp" nếu có cả bản ghi cũ và mới
+                if norm_p in results and meta.get("title") == "Tài liệu trùng lặp":
+                    continue
+                results[norm_p] = {
+                    "file_name": Path(norm_p).name,
+                    "file_path": norm_p,
+                    "is_duplicate": bool(is_dup),
+                    "metadata": meta
+                }
+            return results
+
+    def get_all_hashes(self) -> set[str]:
+        """Lấy toàn bộ mã băm SHA-256 của các tệp đã xử lý thành công để nhận diện trùng lặp xuyên phiên."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_hash FROM processed_files WHERE status = 'COMPLETED' AND file_hash IS NOT NULL")
+            return {row[0] for row in cursor.fetchall() if row[0]}
+
+

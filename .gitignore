@@ -1,0 +1,21 @@
+.env
+.venv/
+.uv_cache/
+.tmp/
+__pycache__/
+*.py[cod]
+*.log
+
+# Generated and local document data
+data/cache/
+data/temp_ocr/
+data/test_render/
+data/test_docs/
+data/input_documents/
+data/output_documents/
+data/reports/
+
+# Local runtime databases
+*.db
+*.sqlite
+*.sqlite3
