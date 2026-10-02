@@ -1,5 +1,5 @@
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, List
 from langdetect import detect, detect_langs, DetectorFactory, LangDetectException
 import pycountry
 from .schemas import DocumentMetadata
@@ -20,25 +20,10 @@ OIL_GAS_CORRECTIONS = [
     (r"\bDIA\s+CHAP\b", "DIA CHAT"),
     (r"\bDIA\s+GHAT\b", "DIA CHAT"),
     
-    # Lỗi chữ O / N dính liền thành All (LO KHOAll -> LỖ KHOAN), vết mực 101 thành 104
+    # Lỗi chữ O / N dính liền thành All (LO KHOAll -> LỖ KHOAN)
     (r"\bLO\s+KHOAll\b", "LO KHOAN"),
     (r"\b15\s+ithoan\b", "lo khoan"),
     (r"\b18\s+khoan\b", "lo khoan"),
-    (r"\bLỖ\s+KHOAN\s+104\b", "LỖ KHOAN 101"),
-    (r"\bLO\s+KHOAN\s+104\b", "LO KHOAN 101"),
-    (r"\bLK-104\b", "LK-101"),
-    
-    # Lỗi LIÊN ĐOÀN
-    (r"\bLIEN\s+DOAD\b", "LIEN DOAN"),
-    (r"\bLUEN\s+DOAD\b", "LIEN DOAN"),
-    
-    # Lỗi KIẾN XƯƠNG THÁI BÌNH
-    (r"\bTIEU\s+XUOLG\b", "KIEN XUONG"),
-    (r"\bMIEN\s+XUOLG\b", "KIEN XUONG"),
-    (r"\bKLEN\s+XUONG\b", "KIEN XUONG"),
-    (r"\bTHAI\s+BILA\b", "THAI BINH"),
-    (r"\bTHAI\s+BILH\b", "THAI BINH"),
-    (r"\bTHAI\s+BIRH\b", "THAI BINH"),
     
     # Lỗi PHỤ BẢN
     (r"\bPEU\s+BAN\b", "PHU BAN"),
@@ -173,6 +158,62 @@ def standardize_language(lang: str, sample_text: str = "") -> str:
     return clean_l.capitalize() if clean_l and clean_l not in {"N/A", "None", "Chưa rõ", "Unknown"} else "English"
 
 
+def extract_enclosures_from_raw_text(raw_text: str) -> Tuple[str, str]:
+    """
+    Rút trích danh mục phụ bản (Enclosures / Danh mục bản vẽ / Приложения) trực tiếp từ văn bản thô.
+    """
+    if not raw_text:
+        return "No", "None"
+
+    m = re.search(
+        r"(?:LIST\s+OF\s+ENCLOSURES|ENCLOSURES|DANH\s+MỤC\s+PHỤ\s+BẢN|PHỤ\s+BẢN\s+KÈM\s+THEO|ПРИЛОЖЕНИЯ)(.*?)(?:\n\s*(?:LIST\s+OF\s+TABLES|TABLES|FIGURES|LIST\s+OF\s+FIGURES|CONTENTS|MỤC\s+LỤC|1\.\s+[A-Z])|\Z)",
+        raw_text,
+        re.IGNORECASE | re.DOTALL
+    )
+    if not m:
+        return "No", "None"
+
+    section_text = m.group(1)
+    clean_text = " ".join(section_text.split())
+    items = []
+
+    # Định dạng Enclosure 1 ... Enclosure 2 ...
+    matches = re.findall(
+        r"(?:Enclosure|Phụ\s+bản|Приложение)\s*(\d+)[\s:\.-]+(.*?)(?=(?:Enclosure|Phụ\s+bản|Приложение)\s*\d+|\Z)",
+        clean_text,
+        re.IGNORECASE
+    )
+    if matches:
+        for num, name in matches:
+            name = name.strip(" -:;,")
+            # Loại bỏ các từ khóa bảng biểu / rác lọt vào
+            if name and not any(term in name.upper() for term in ["LIST OF TABLES", "FIGURES", "TABLES"]):
+                items.append(name)
+
+    # Nếu không có từ khóa Enclosure đứng trước từng dòng, kiểm tra danh sách đánh số 1. ... 2. ...
+    if not items:
+        lines = [l.strip() for l in section_text.split("\n") if l.strip()]
+        for line in lines:
+            m_num = re.match(r"^\d+[\.\)]\s*(.+)$", line)
+            if m_num:
+                items.append(m_num.group(1).strip(" -:;,"))
+
+    if items:
+        seen = set()
+        deduped = []
+        for it in items:
+            # Loại bỏ các ký tự rác OCR như 'I I I I' ở cuối dòng
+            it_clean = re.sub(r"(\s+[I|jJ\-])+$", "", it).strip()
+            it_clean = re.sub(r"\s+", " ", it_clean).strip()
+            if it_clean.lower() not in seen and len(it_clean) > 2:
+                seen.add(it_clean.lower())
+                deduped.append(it_clean)
+        if deduped:
+            return str(len(deduped)), "; ".join(deduped)
+
+    return "No", "None"
+
+
 def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> DocumentMetadata:
     """
     Chuẩn hóa các trường metadata sau trích xuất để khắc phục các lỗi typo rác:
@@ -189,20 +230,91 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
                 data[field] = "N/A"
             else:
                 data[field] = clean_oil_gas_text(val)
-            
-    # Bổ sung giếng khoan từ tiêu đề hoặc raw_text nếu well_link chưa được phát hiện
+
+    # 1. Bổ sung giếng khoan từ tiêu đề hoặc raw_text nếu well_link chưa được phát hiện
     if not data.get("well_link") or data["well_link"] in {"N/A", "None", "nan", ""}:
         title = data.get("title", "")
-        m = re.search(r"(?:LỖ KHOAN|LK|WELL)[-\s]*([0-9A-Z]+)", title, re.IGNORECASE)
+        m = re.search(r"(?:LỖ KHOAN|LK|WELL)[-\s]*([0-9A-Z\-]+)", title, re.IGNORECASE)
         if m:
-            data["well_link"] = f"LK-{m.group(1)}"
+            data["well_link"] = m.group(1) if "-" in m.group(1) else f"LK-{m.group(1)}"
         elif raw_text:
             # Bổ sung nhận diện giếng khoan tiếng Nga (Скважина / Скв.)
             m_ru = re.search(r"(?:Скважина|Скв\.?)\s*[:№\s]*([0-9A-Za-zА-Яа-я\-]+(?:\s*\([^\)]+\))?)", raw_text, re.IGNORECASE)
             if m_ru:
                 data["well_link"] = m_ru.group(1).strip()
 
-    # Bổ sung Contract Name / Block từ well_link nếu contract_name chưa có
+    # 2. Xử lý trường hợp Well link vs Contract Name (VD: BLOCKS 15-1 & 15-2 bị gán nhầm vào Contract Name)
+    contract_val = str(data.get("contract_name", "") or "").strip()
+    well_val = str(data.get("well_link", "") or "").strip()
+    title_val = str(data.get("title", "") or "").strip()
+
+    # Nếu contract_name thực chất là tên Block (ví dụ: BLOCKS 15-1 & 15-2, BLOCK 15-1, LÔ 05-3)
+    if re.search(r"\b(?:BLOCKS?|LÔ)\s+[0-9\s&,\-]+", contract_val, re.IGNORECASE):
+        if well_val in {"N/A", "None", "nan", ""}:
+            # Chuyển Block sang well_link
+            data["well_link"] = contract_val
+            # Nếu originator có tên công ty (ví dụ: SANTOS LIMITED), contract_name sẽ là tên công ty/chủ quản
+            orig_val = str(data.get("originator", "") or "").strip()
+            if orig_val and orig_val not in {"N/A", "None", "Chưa rõ"}:
+                data["contract_name"] = orig_val
+            else:
+                data["contract_name"] = "N/A"
+
+    # Nếu well_link vẫn chưa có nhưng tiêu đề có số hiệu BLOCKS (ví dụ: BLOCK REVIEW BLOCKS 15-1 & 15-2)
+    if data.get("well_link") in {"N/A", "None", "nan", ""}:
+        m_block_in_title = re.search(r"\b(BLOCKS?\s+[0-9\s&,\-]+)", title_val, re.IGNORECASE)
+        if m_block_in_title:
+            data["well_link"] = m_block_in_title.group(1).strip()
+
+    # Nhận diện đơn vị điều hành / công ty phát hành từ cấu trúc 'by <COMPANY>' hoặc pháp nhân dầu khí tổng quát
+    # Áp dụng bình đẳng cho mọi công ty quốc tế & Việt Nam (SANTOS, AEDC, CUU LONG JOC, VIETSOVPETRO, JVPC, KNOC...)
+    if data.get("contract_name") in {"N/A", "None", "nan", ""} or data.get("originator") in {"N/A", "None", "nan", "", "Chưa rõ"}:
+        search_zone = (title_val + "\n" + (raw_text[:1500] if raw_text else "")).strip()
+        # Tìm mẫu: by <TÊN CÔNG TY> hoặc operator: <TÊN CÔNG TY>
+        m_by = re.search(r"\b(?:by|operator|client|for)\s+([A-Z0-9\s.,&-]+(?:\bLTD\b|\bLIMITED\b|\bCORP\b|\bCORPORATION\b|\bINC\b|\bJOC\b|\bCOMPANY\b|\bVIETSOVPETRO\b|\bPETROVIETNAM\b|\bZARUBEZHNEFT\b|\bPVEP\b|\bPVD\b|\bENTERPRISE\b))", search_zone, re.IGNORECASE)
+        if m_by:
+            found_company = " ".join(m_by.group(1).split()).strip(" ,.-")
+            if data.get("contract_name") in {"N/A", "None", "nan", ""}:
+                data["contract_name"] = found_company
+            if data.get("originator") in {"N/A", "None", "nan", "", "Chưa rõ"}:
+                data["originator"] = found_company
+        else:
+            # Tìm bất kỳ pháp nhân dầu khí chuẩn nào ở phần đầu tài liệu
+            m_corp = re.search(r"\b([A-Z0-9\s.,&-]{3,40}(?:\bLTD\b|\bLIMITED\b|\bCORP\b|\bCORPORATION\b|\bINC\b|\bJOC\b|\bCOMPANY\b|\bVIETSOVPETRO\b|\bPETROVIETNAM\b|\bZARUBEZHNEFT\b))\b", search_zone)
+            if m_corp:
+                found_company = " ".join(m_corp.group(1).split()).strip(" ,.-")
+                if data.get("contract_name") in {"N/A", "None", "nan", ""}:
+                    data["contract_name"] = found_company
+                if data.get("originator") in {"N/A", "None", "nan", "", "Chưa rõ"}:
+                    data["originator"] = found_company
+
+    # 3. Khử Hallucination Originator: Đơn vị ban hành phải có căn cứ trong văn bản
+    orig_val = str(data.get("originator", "") or "").strip()
+    if orig_val and orig_val not in {"N/A", "None", "Chưa rõ"}:
+        orig_sig = re.sub(r"[^\w\s]", "", orig_val).strip()
+        # Nếu cụm từ đơn vị ban hành hoàn toàn không xuất hiện trong raw_text
+        if raw_text and len(orig_sig) >= 6 and orig_sig.lower() not in raw_text.lower():
+            if data.get("contractor") and data["contractor"] not in {"N/A", "None"}:
+                data["originator"] = data["contractor"]
+            else:
+                data["originator"] = "N/A"
+
+    # 4. Khử Hallucination Tác giả (Author):
+    author_val = str(data.get("author", "") or "").strip()
+    if author_val.lower() in {"none", "n/a", "no", "không có", "unknown", "chưa rõ", "none.", ""}:
+        data["author"] = "None"
+    else:
+        # Nếu ngôn ngữ tài liệu là tiếng Anh hoặc tiếng Nga, tác giả phải xuất hiện thực tế trong văn bản gốc
+        lang_guess = str(data.get("language", "")).lower()
+        author_parts = [p.strip() for p in author_val.split(";") if p.strip()]
+        if lang_guess in {"english", "russian", "en", "ru"} and raw_text:
+            valid_parts = [p for p in author_parts if p.lower() in raw_text.lower()]
+            data["author"] = "; ".join(valid_parts) if valid_parts else "None"
+        elif raw_text:
+            valid_parts = [p for p in author_parts if p.lower() in raw_text.lower() or len(p) >= 3]
+            data["author"] = "; ".join(valid_parts) if valid_parts else "None"
+
+    # Bổ sung Contract Name / Block từ well_link nếu contract_name vẫn chưa có
     if not data.get("contract_name") or data["contract_name"] in {"N/A", "None", "nan", ""}:
         well = data.get("well_link", "")
         m_block = re.search(r"^([0-9]{2}-[0-9]{1,2})", well)
@@ -224,9 +336,18 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
     # Quy chuẩn ngôn ngữ tự động bằng langdetect + pycountry
     data["language"] = standardize_language(data.get("language", ""), sample_text=combined_sample)
 
-    # Chuẩn hóa trường Phụ bản (ENCL & Encl Name):
-    # Loại bỏ nhầm lẫn giữa bảng số liệu nội bộ (Табл. 1, Table 1, Bảng 1) với Phụ bản đính kèm (Enclosure)
+    # 5. Chuẩn hóa trường Phụ bản (ENCL & Encl Name):
     encl_name_str = str(data.get("encl_name", "None") or "None").strip()
+    encl_val_str = str(data.get("encl", "No") or "No").strip()
+
+    # Nếu VLM hoặc LLM chưa nhận diện được phụ bản (hoặc là No/None), tự động rà quét từ raw_text
+    if (encl_val_str in {"No", "0", "N/A", "None", ""} or encl_name_str in {"None", "N/A", "nan", "", "Chưa rõ", "Unknown"}) and raw_text:
+        text_encl_count, text_encl_names = extract_enclosures_from_raw_text(raw_text)
+        if text_encl_count != "No":
+            data["encl"] = text_encl_count
+            data["encl_name"] = text_encl_names
+            encl_name_str = text_encl_names
+
     if encl_name_str in {"None", "N/A", "nan", "", "Chưa rõ", "Unknown"}:
         data["encl"] = "No"
         data["encl_name"] = "None"
@@ -242,8 +363,8 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
             data["encl_name"] = "None"
         else:
             data["encl_name"] = "; ".join(valid_items)
-            # Đồng bộ số lượng phụ bản chuẩn xác theo số lượng mục thực tế
             data["encl"] = str(len(valid_items))
 
     return DocumentMetadata(**data)
+
 

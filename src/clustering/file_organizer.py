@@ -28,8 +28,9 @@ def sanitize_folder_name(name: str, max_length: int = 50) -> str:
 
 class FileOrganizer:
     """
-    Gom cụm và sắp xếp các tệp tài liệu vào các thư mục theo Ngôn ngữ (Language):
-    Cấu trúc: <base_output_dir>/<LANGUAGE>/<ten_file> (Ví dụ: D:\\outputNLP\\English\\BC_VSP_1805.doc)
+    Gom cụm và sắp xếp các tệp tài liệu vào các thư mục theo Ngày và Ngôn ngữ (Language):
+    Cấu trúc: <base_output_dir>/<YYYYMMDD>/<LANGUAGE>/<ten_file> (Ví dụ: D:\\outputNLP\\20261002\\Russian\\C194_R1.DOC)
+    Thư mục ngày chỉ được tạo khi có tài liệu thực sự cần phân loại.
     """
     def __init__(self, base_output_dir: Path):
         self.base_output_dir = Path(base_output_dir).resolve()
@@ -41,22 +42,39 @@ class FileOrganizer:
         language: Optional[str] = None,
         contract_name: Optional[str] = None,
         originator: Optional[str] = None,
-        mode: str = "move"  # "move" hoặc "copy"
+        mode: str = "move",  # "move" hoặc "copy"
+        date_str: Optional[str] = None,
     ) -> Path:
         """
-        Di chuyển hoặc sao chép tệp vào thư mục theo Ngôn ngữ chuẩn hóa.
+        Di chuyển hoặc sao chép tệp vào thư mục theo Ngày (<YYYYMMDD>) và Ngôn ngữ chuẩn hóa.
+        Chỉ tạo thư mục ngày và ngôn ngữ khi có tệp thực sự cần chuyển vào (on-demand).
         """
         source_file = Path(source_file)
         if not source_file.exists():
             return source_file
 
+        if not date_str:
+            from datetime import datetime
+            date_str = datetime.now().strftime("%Y%m%d")
+
         safe_lang = sanitize_folder_name(language or "Unknown")
 
-        # Cấu trúc mới: <base_output_dir>/<LANGUAGE>/<ten_file>
-        target_dir = self.base_output_dir / safe_lang
+        # Cấu trúc: <base_output_dir>/<YYYYMMDD>/<LANGUAGE>/<ten_file>
+        target_dir = self.base_output_dir / date_str / safe_lang
         target_dir.mkdir(parents=True, exist_ok=True)
 
         target_file_path = target_dir / source_file.name
+
+        # Nếu tệp nguồn đã nằm đúng vị trí đích
+        if source_file.resolve() == target_file_path.resolve():
+            return target_file_path
+
+        # Nếu tệp đích đã tồn tại, xóa trước khi move để tránh lỗi FileExistsError trên Windows
+        if target_file_path.exists():
+            try:
+                target_file_path.unlink()
+            except Exception:
+                pass
 
         try:
             if mode == "move":
@@ -74,3 +92,4 @@ class FileOrganizer:
         except Exception as e:
             logger.error(f"Lỗi khi di chuyển/sao chép tệp '{source_file}': {e}")
             return source_file
+

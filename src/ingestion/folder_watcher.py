@@ -192,10 +192,8 @@ class HotFolderWatcher:
         self.output_dir = Path(output_dir or settings.OUTPUT_DIR).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        if output_report is None:
-            self.output_report = (self.output_dir / "tong_hop_tai_lieu.xlsx").resolve()
-        else:
-            self.output_report = Path(output_report).resolve()
+        self.custom_output_report = Path(output_report).resolve() if output_report else None
+        self.output_report = self.custom_output_report
 
         self.stable_seconds = stable_seconds
         self.mode = mode
@@ -224,19 +222,30 @@ class HotFolderWatcher:
 
             path_str = str(file_path)
             try:
-                if not self.pipeline.state_tracker.is_processed(path_str):
-                    logger.info(f"⏳ [WATCHER] Đang chờ file ghi hoàn tất (ổn định {self.stable_seconds}s): {file_path.name}...")
-                    is_ready = wait_until_file_ready(file_path, stable_seconds=self.stable_seconds)
-                    if not is_ready:
-                        logger.warning(f"⚠️ Bỏ qua {file_path.name} vì tệp không khả dụng hoặc chưa ghi xong.")
-                        continue
+                # Nếu ở chế độ copy và file đã xử lý xong trước đó, bỏ qua để tránh lặp
+                if self.mode == "copy" and self.pipeline.state_tracker.is_processed(path_str):
+                    logger.debug(f"File {file_path.name} đã được xử lý (chế độ copy), bỏ qua.")
+                    continue
 
-                    logger.info(f"🚀 [WATCHER] File đã sẵn sàng 100%! Bắt đầu trích xuất AI: {file_path.name}")
-                    result = self.pipeline.process_single_file(file_path)
-                    if result is not None:
-                        # Cập nhật ngay dòng mới vào file Excel tổng hợp
-                        self.pipeline.export_current_report(self.watch_dir, self.output_report)
-                        logger.info(f"✅ [WATCHER] Đã xử lý, phân loại & cập nhật Excel thành công cho: {file_path.name}")
+                logger.info(f"⏳ [WATCHER] Đang chờ file ghi hoàn tất (ổn định {self.stable_seconds}s): {file_path.name}...")
+                is_ready = wait_until_file_ready(file_path, stable_seconds=self.stable_seconds)
+                if not is_ready:
+                    logger.warning(f"⚠️ Bỏ qua {file_path.name} vì tệp không khả dụng hoặc chưa ghi xong.")
+                    continue
+
+                logger.info(f"🚀 [WATCHER] File đã sẵn sàng 100%! Bắt đầu trích xuất AI: {file_path.name}")
+                from datetime import datetime
+                today_str = datetime.now().strftime("%Y%m%d")
+                result = self.pipeline.process_single_file(file_path, date_str=today_str)
+                if result is not None:
+                    daily_report = self.custom_output_report or (self.output_dir / today_str / f"tong_hop_tai_lieu_{today_str}.xlsx")
+                    # Cập nhật ngay dòng mới vào file Excel tổng hợp theo ngày
+                    self.pipeline.export_current_report(
+                        input_dir=self.watch_dir,
+                        output_report=daily_report,
+                        date_str=today_str
+                    )
+                    logger.info(f"✅ [WATCHER] Đã xử lý, phân loại & cập nhật Excel thành công cho: {file_path.name}")
             except Exception as e:
                 logger.error(f"❌ [WATCHER] Lỗi không mong muốn khi xử lý {file_path.name}: {e}")
             finally:
@@ -250,10 +259,13 @@ class HotFolderWatcher:
 
         if run_initial_scan:
             logger.info("🔍 [WATCHER] Kiểm tra các tài liệu hiện có trong thư mục trước khi vào chế độ trực chiến...")
-            self.pipeline.run(input_dir=self.watch_dir, output_report=self.output_report)
+            from datetime import datetime
+            today_str = datetime.now().strftime("%Y%m%d")
+            daily_report = self.custom_output_report or (self.output_dir / today_str / f"tong_hop_tai_lieu_{today_str}.xlsx")
+            self.pipeline.run(input_dir=self.watch_dir, output_report=daily_report, date_str=today_str)
 
         event_handler = HotFolderEventHandler(
-            self.file_queue, self.queued_paths, self.lock, output_report=self.output_report
+            self.file_queue, self.queued_paths, self.lock, output_report=self.custom_output_report
         )
         self.observer.schedule(event_handler, str(self.watch_dir), recursive=True)
         self.observer.start()

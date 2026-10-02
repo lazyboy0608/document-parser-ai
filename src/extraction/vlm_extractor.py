@@ -17,25 +17,27 @@ Dưới đây là hình ảnh các trang đầu (trang bìa, trang phê duyệt 
 
 Nhiệm vụ: Hãy quan sát kỹ hình ảnh và trích xuất các trường dữ liệu JSON theo định dạng sau:
 {
-  "well_link": "Tên hoặc số hiệu giếng khoan / lỗ khoan (ví dụ: LK-101, 15-A-1X, 711 MSP-7). Không có ghi 'N/A'",
-  "contract_name": "Tên hợp đồng / Đề án / Liên đoàn / Lô dầu khí (ví dụ: LIÊN ĐOÀN DẦU KHÍ 36, BLOCKS 15-1). Không có ghi 'N/A'",
-  "title": "Tiêu đề chính xác và đầy đủ nhất của báo cáo (ví dụ: KẾT QUẢ NGHIÊN CỨU ĐỊA CHẤT LỖ KHOAN 101 KIẾN XƯƠNG THÁI BÌNH). Tuyệt đối không ghi sai chính tả như 'LGHIEN' thành 'NGHIÊN'",
-  "public_date": "Ngày tháng hoặc năm lập báo cáo (ví dụ: 1975, 18.06.2012, November 1991)",
-  "originator": "Đơn vị ban hành / chủ quản / công ty tạo ra báo cáo (ví dụ: TỔNG CỤC DẦU MỎ VÀ KHÍ ĐỐT VIỆT NAM, SANTOS LIMITED, PVD LOGGING)",
-  "contractor": "Nhà thầu thi công / đơn vị dịch vụ kỹ thuật / đơn vị thực hiện (nếu có ghi rõ đơn vị). Không có ghi 'N/A'",
-  "language": "Tên ngôn ngữ chính của tài liệu viết bằng TIẾNG ANH chuẩn quốc tế (ví dụ: 'Vietnamese', 'English', 'Russian', 'French', 'Japanese', 'Chinese'...)"
+  "well_link": "Tên/số hiệu giếng khoan hoặc số hiệu Lô/Block dầu khí nếu là báo cáo tổng quan Lô/Block (ví dụ: <SỐ_HIỆU_GIẾNG>, <TÊN_BLOCK>). Nếu không có giếng hoặc Lô thì ghi 'N/A'",
+  "contract_name": "Tên hợp đồng, đề án, hoặc tên công ty/đơn vị chủ trì ký kết hợp đồng PSC (ví dụ: <TÊN_HỢP_ĐỒNG_HOẶC_CÔNG_TY>). Nếu không có ghi 'N/A'",
+  "title": "Tiêu đề chính xác và đầy đủ nhất của báo cáo ghi trên trang bìa. Tuyệt đối không ghi sai chính tả.",
+  "public_date": "Ngày tháng hoặc năm lập báo cáo (ví dụ: <NGÀY_THÁNG_NĂM>). Nếu không rõ ghi 'Chưa rõ'",
+  "originator": "Đơn vị ban hành, công ty chủ sở hữu hoặc công ty lập báo cáo (ví dụ: <TÊN_CÔNG_TY_BAN_HÀNH>). Chỉ lấy đơn vị thực tế có ghi trong tài liệu, TUYỆT ĐỐI KHÔNG tự bịa đặt đơn vị khác nếu tài liệu không nhắc tới.",
+  "contractor": "Nhà thầu thi công / đơn vị dịch vụ kỹ thuật / đơn vị thực hiện (nếu có ghi rõ). Nếu không có ghi 'N/A'",
+  "author": "Họ và tên tác giả cá nhân hoặc nhóm biên soạn báo cáo. Nếu trên trang bìa/phê duyệt KHÔNG có tên tác giả cá nhân thì ghi 'None' hoặc 'N/A'. TUYỆT ĐỐI KHÔNG tự gán tên tác giả của tài liệu khác vào.",
+  "language": "Tên ngôn ngữ chính của tài liệu viết bằng TIẾNG ANH chuẩn quốc tế (ví dụ: 'English', 'Vietnamese', 'Russian', 'French'...)"
 }
 
 LƯU Ý QUAN TRỌNG:
 - Trả về DUY NHẤT một chuỗi JSON hợp lệ.
 - Không thêm bất kỳ lời dẫn giải hay markdown thừa nào ngoài JSON.
+- Tuyệt đối trung thực với nội dung hiển thị trong hình ảnh, không suy diễn thông tin từ tài liệu khác.
 """
 
 VLM_ENCL_PROMPT = """Hình ảnh này là trang danh mục 'PHỤ BẢN KÈM THEO' (Enclosures / Danh mục bản vẽ đính kèm) của báo cáo dầu khí.
-Hãy quan sát kỹ danh sách ở cột 'Tên phụ bản':
-1. Đếm tổng số lượng phụ bản thực tế (ví dụ: '8', '13'). Nếu không có phụ bản nào ghi 'No'.
+Hãy quan sát kỹ danh sách ở cột 'Tên phụ bản' hoặc phần liệt kê các Enclosures:
+1. Đếm tổng số lượng phụ bản thực tế (ví dụ: '3', '8', '13'). Nếu không có phụ bản nào ghi 'No'.
 2. Liệt kê đầy đủ tên từng phụ bản theo thứ tự các mục được đánh số (từ mục 1 đến hết), ngăn cách nhau bằng dấu chấm phẩy (;). 
-   - Chỉ lấy phần tên nội dung của phụ bản (ví dụ: 'Sơ đồ vị trí lỗ khoan 101', 'Sơ đồ cấu tạo theo tầng phản xạ chuẩn I'...).
+   - Chỉ lấy phần tên nội dung của phụ bản (ví dụ: 'Regional Geological Map', 'Generalised Stratigraphy', 'Time contour map of Red horizon'...).
    - Không lấy số hiệu bản vẽ hay tỉ lệ bản vẽ vào trong tên phụ bản.
 
 Trả về DUY NHẤT định dạng JSON sau:
@@ -45,16 +47,12 @@ Trả về DUY NHẤT định dạng JSON sau:
 }
 """
 
-VLM_AUTHOR_PROMPT = """Hình ảnh là ảnh chụp phóng to cận cảnh độ phân giải cao (Crop-Zoom) của góc Tác giả, người thực hiện báo cáo và chủ biên (máy đánh chữ thời kỳ cũ).
-Hãy quan sát thật cẩn thận từng dòng chữ họ và tên của 4 tác giả và người chủ biên:
-- Dòng 1: Trương Công Tài
-- Dòng 2: Nguyễn Xuân Đức (chữ cái bắt đầu là 'X' của chữ Xuân, tên kết thúc bằng 'Đức')
-- Dòng 3: Nguyễn Đình Phô (chữ 'Phô' chỉ mang dấu mũ ô, tuyệt đối không có dấu sắc, không viết là Phố)
-- Dòng 4 & Chủ biên: Dương Đặng Thứ (chữ 'Đặng' có dấu nặng, chữ 'Thứ' có dấu móc ư và dấu sắc, không nhầm thành 'Thú'/'Thúy')
-
-Trả về DUY NHẤT danh sách họ tên các tác giả ngăn cách bởi dấu chấm phẩy (;):
-Trương Công Tài; Nguyễn Xuân Đức; Nguyễn Đình Phô; Dương Đặng Thứ
-Chỉ trả về chuỗi tên tác giả, không kèm bất kỳ lời dẫn giải nào khác.
+VLM_AUTHOR_PROMPT = """Hình ảnh là ảnh chụp vùng chữ ký, phê duyệt hoặc người thực hiện báo cáo.
+Hãy quan sát kỹ và đọc chính xác họ và tên của các tác giả, người lập báo cáo, người kiểm tra hoặc chủ biên trong ảnh:
+- Trả về danh sách họ tên các tác giả ngăn cách bởi dấu chấm phẩy (;).
+- Nếu trong ảnh KHÔNG có tên tác giả cá nhân hoặc chỉ là chữ ký không rõ tên / con dấu cơ quan thì trả về: None
+- TUYỆT ĐỐI KHÔNG tự suy diễn hoặc bịa đặt tên người nếu không thấy chữ trong ảnh.
+Chỉ trả về chuỗi tên tác giả (hoặc None), không kèm bất kỳ lời dẫn giải nào khác.
 """
 
 
@@ -161,10 +159,21 @@ class VLMExtractor:
         # -------------------------------------------------------------
         # 2. PASS 2: Trích xuất Trang phụ bản (Enclosures)
         # -------------------------------------------------------------
-        # Trang phụ bản thường là trang thứ 3 hoặc trang cuối trong các trang đầu
+        # Tìm trang phụ bản thông minh trong các trang đầu (từ trang 2 trở đi)
         encl_page = None
-        if len(full_page_paths) >= 3:
-            encl_page = full_page_paths[2]
+        if len(full_page_paths) >= 2:
+            # Ưu tiên trang có tên hoặc nội dung phụ bản nếu có
+            for p in full_page_paths[1:]:
+                # Nếu có từ khóa hoặc là trang thứ 3, 4
+                if "encl" in p.name.lower() or "phu_ban" in p.name.lower():
+                    encl_page = p
+                    break
+            # Nếu chưa xác định, thử trang 3 hoặc 4 hoặc trang cuối trong các trang đầu
+            if not encl_page:
+                if len(full_page_paths) >= 4:
+                    encl_page = full_page_paths[3]
+                elif len(full_page_paths) >= 3:
+                    encl_page = full_page_paths[2]
         
         if encl_page and encl_page.exists():
             logger.info(f"-> [VLM - Pass 2] Trích xuất danh mục phụ bản chuyên biệt từ trang: {encl_page.name}...")
@@ -186,15 +195,20 @@ class VLMExtractor:
                 logger.warning(f"Lỗi khi trích xuất Pass 2 (Phụ bản): {e}")
 
         # -------------------------------------------------------------
-        # 3. PASS 3: Trích xuất Tác giả qua Crop-Zoom cận cảnh (RoI 300 DPI)
+        # 3. PASS 3: Trích xuất Tác giả qua Crop-Zoom cận cảnh (Chỉ khi cần thiết)
         # -------------------------------------------------------------
+        current_author = str(metadata_dict.get("author", "") or "").strip()
+        current_lang = str(metadata_dict.get("language", "") or "").strip().lower()
+        needs_author_zoom = current_author in {"", "N/A", "Chưa rõ", "Unknown"} and current_author != "None"
+
         roi_b64 = None
-        if roi_paths:
+        if roi_paths and needs_author_zoom:
             roi_b64 = self.prepare_image(roi_paths[0], max_dim=1400)
             logger.info(f"-> [VLM - Pass 3] Sử dụng ảnh Crop-Zoom RoI 300 DPI: {roi_paths[0].name}")
-        elif len(full_page_paths) >= 2:
+        elif len(full_page_paths) >= 2 and needs_author_zoom and current_lang in {"vietnamese", "vi"}:
             roi_b64 = self.create_high_res_roi_crop(full_page_paths[1])
-            logger.info(f"-> [VLM - Pass 3] Tự động tạo ảnh Crop-Zoom RoI từ: {full_page_paths[1].name}")
+            if roi_b64:
+                logger.info(f"-> [VLM - Pass 3] Tự động tạo ảnh Crop-Zoom RoI từ: {full_page_paths[1].name}")
 
         if roi_b64:
             try:
@@ -204,14 +218,15 @@ class VLMExtractor:
                     options={"num_ctx": 16384, "temperature": 0.0}
                 )
                 raw_author = resp_author.get("message", {}).get("content", "").strip()
-                # Làm sạch tiền tố dư thừa nếu mô hình trả về "Danh sách tác giả:"
                 clean_author = raw_author.replace("\n", "; ")
                 for prefix in ["Dựa trên thông tin", "Danh sách họ tên các tác giả", "Tác giả gồm:", "Tác giả:"]:
                     if prefix.lower() in clean_author.lower():
                         clean_author = clean_author.split(":", 1)[-1].strip()
                 clean_author = clean_author.strip("; ")
-                if clean_author:
+                if clean_author and clean_author.lower() not in {"none", "n/a", "không có", "unknown", "chưa rõ"}:
                     metadata_dict["author"] = clean_author
+                elif clean_author.lower() in {"none", "n/a", "không có"}:
+                    metadata_dict["author"] = "None"
             except Exception as e:
                 logger.warning(f"Lỗi khi trích xuất Pass 3 (Tác giả RoI): {e}")
 

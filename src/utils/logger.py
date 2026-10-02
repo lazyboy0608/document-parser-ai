@@ -6,6 +6,15 @@ from pathlib import Path
 LOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "cache" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+if sys.platform.startswith("win"):
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 logger.remove()
 logger.add(
     sys.stdout,

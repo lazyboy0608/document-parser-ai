@@ -74,6 +74,35 @@ class StateTracker:
             """, (norm_p, file_hash, status, 1 if is_duplicate else 0, json.dumps(metadata, ensure_ascii=False) if metadata else None))
             conn.commit()
 
+    def delete_state(self, file_path: str):
+        """Xóa trạng thái của tệp khỏi cơ sở dữ liệu (ví dụ khi tệp được di chuyển sang vị trí mới)."""
+        norm_p = self._norm(file_path)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM processed_files WHERE file_path = ? OR file_path = ?", (norm_p, str(file_path)))
+            conn.commit()
+
+    def cleanup_missing_files(self) -> int:
+        """
+        Dọn dẹp các bản ghi trong SQLite nếu tệp vật lý không còn tồn tại trên đĩa.
+        Giúp đồng bộ trạng thái khi người dùng chủ động xóa tệp cũ để test lại hoặc xử lý lại từ đầu.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_path FROM processed_files")
+            rows = cursor.fetchall()
+            deleted_count = 0
+            for (fp,) in rows:
+                try:
+                    p = Path(fp)
+                    if not p.exists():
+                        cursor.execute("DELETE FROM processed_files WHERE file_path = ?", (fp,))
+                        deleted_count += 1
+                except Exception:
+                    pass
+            conn.commit()
+            return deleted_count
+
     def get_all_completed(self) -> Dict[str, Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -94,11 +123,26 @@ class StateTracker:
                 }
             return results
 
-    def get_all_hashes(self) -> set[str]:
-        """Lấy toàn bộ mã băm SHA-256 của các tệp đã xử lý thành công để nhận diện trùng lặp xuyên phiên."""
+    def get_active_hashes(self) -> set[str]:
+        """
+        Lấy toàn bộ mã băm SHA-256 của các tệp đã xử lý thành công mà tệp đích THỰC SỰ ĐANG TỒN TẠI trên đĩa.
+        Nếu tệp vật lý đã bị xóa khỏi đĩa, mã băm đó không được coi là trùng lặp nữa.
+        """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT file_hash FROM processed_files WHERE status = 'COMPLETED' AND file_hash IS NOT NULL")
-            return {row[0] for row in cursor.fetchall() if row[0]}
+            cursor.execute("SELECT file_path, file_hash FROM processed_files WHERE status = 'COMPLETED' AND file_hash IS NOT NULL")
+            active_hashes = set()
+            for fp, fhash in cursor.fetchall():
+                try:
+                    if Path(fp).exists():
+                        active_hashes.add(fhash)
+                except Exception:
+                    pass
+            return active_hashes
+
+    def get_all_hashes(self) -> set[str]:
+        """Lấy toàn bộ mã băm SHA-256 của các tệp đang tồn tại trên đĩa."""
+        return self.get_active_hashes()
+
 
 

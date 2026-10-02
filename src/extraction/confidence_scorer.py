@@ -202,6 +202,13 @@ def evaluate_metadata_confidence(
 
         # 1. Nếu trường bắt buộc bị khuyết ("Unknown" / "Chưa rõ" / "N/A")
         if field in MANDATORY_FIELDS and (is_missing or is_na):
+            # Nếu là author = "None" / "N/A" nhưng tài liệu thực tế không có từ khóa tác giả cá nhân (báo cáo của công ty/tổ chức)
+            if field == "author" and is_na:
+                has_author_prompt = re.search(r"(?:author|compiled by|tác giả|người lập|chủ biên|chủ nhiệm)\s*[:\.]", raw_text or "", re.IGNORECASE)
+                if not has_author_prompt:
+                    field_confidences[field] = 95.0
+                    continue
+
             score_pct = 45.0 if is_missing else 58.0
             field_confidences[field] = round(score_pct, 1)
             low_confidence_fields.append(field)

@@ -36,7 +36,8 @@ def _extract_text_via_olefile(file_path: Path) -> str:
         keywords = [
             "скважина", "скв", "well", "месторождение", "заключение", "отчет",
             "giếng", "lỗ khoan", "lk", "ngày", "đơn vị", "nhà thầu", "báo cáo",
-            "kết quả", "chủ đầu tư", "công ty", "tổng công ty", "xí nghiệp", "liên doanh"
+            "kết quả", "chủ đầu tư", "công ty", "tổng công ty", "xí nghiệp", "liên doanh",
+            "rapport", "puits", "champ", "date", "société", "compagnie", "report", "field", "operator", "block"
         ]
         valid_lines = []
         for line in cleaned.split("\r"):

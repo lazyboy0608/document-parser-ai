@@ -40,8 +40,8 @@ def main():
     parser.add_argument(
         "--output-report",
         type=Path,
-        default=settings.REPORTS_DIR / "tong_hop_tai_lieu.xlsx",
-        help="Đường dẫn tệp Excel báo cáo tổng hợp"
+        default=None,
+        help="Đường dẫn tệp Excel báo cáo tổng hợp (Mặc định: tự động theo ngày <output_dir>/<YYYYMMDD>/tong_hop_tai_lieu_<YYYYMMDD>.xlsx)"
     )
     parser.add_argument(
         "--mode",
@@ -68,20 +68,18 @@ def main():
     args.output_dir = args.output_dir.resolve()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Tự động xuất file Excel trong thư mục output_dir nếu người dùng không chỉ định file cụ thể
-    default_report = settings.REPORTS_DIR / "tong_hop_tai_lieu.xlsx"
-    if args.output_report.resolve() == default_report.resolve():
-        if args.output_dir.resolve() != settings.OUTPUT_DIR.resolve():
-            args.output_report = args.output_dir / "tong_hop_tai_lieu.xlsx"
-        elif args.input_dir.resolve() != settings.INPUT_DIR.resolve():
-            args.output_report = args.input_dir / "tong_hop_tai_lieu.xlsx"
+    report_display = (
+        str(args.output_report)
+        if args.output_report
+        else f"Tự động theo ngày ({args.output_dir}/<YYYYMMDD>/tong_hop_tai_lieu_<YYYYMMDD>.xlsx)"
+    )
 
     logger.info("=" * 65)
     logger.info("  HỆ THỐNG XỬ LÝ & TỔNG HỢP TÀI LIỆU TỰ ĐỘNG (OCR + VLM + LLM)")
     logger.info(f"  Mô hình Text LLM: {settings.OLLAMA_MODEL} | VLM: {settings.VLM_MODEL}")
     logger.info(f"  Thư mục đầu vào : {args.input_dir}")
     logger.info(f"  Thư mục phân loại: {args.output_dir} (Cơ chế: {args.mode.upper()})")
-    logger.info(f"  Tệp báo cáo Excel: {args.output_report}")
+    logger.info(f"  Tệp báo cáo Excel: {report_display}")
     logger.info("=" * 65)
 
     if args.watch:
