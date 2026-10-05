@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Tuple, List, Optional, Dict, Any
 import pymupdf as fitz

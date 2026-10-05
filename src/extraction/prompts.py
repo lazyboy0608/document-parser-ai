@@ -1,3 +1,80 @@
+"""
+Định nghĩa hệ thống câu lệnh mẫu (Prompts) cho mô hình trích xuất metadata Dầu khí:
+1. Kiến trúc Tách Cụm Ngữ Nghĩa (Targeted Clustered Extraction):
+   - Cụm 1: Định danh tài liệu & Mốc thời gian (Identity & Chronology: well_link, contract_name, title, public_date)
+   - Cụm 2: Chủ thể Pháp nhân & Tác giả (Corporate Entities & Authors: originator, contractor, author)
+2. Duy trì các prompt legacy để đảm bảo tương thích ngược 100%.
+"""
+
+# ==============================================================================
+# CỤM 1: ĐỊNH DANH TÀI LIỆU & THỜI GIAN (IDENTITY & CHRONOLOGY)
+# ==============================================================================
+IDENTITY_SYSTEM_PROMPT = """You are an expert AI specialized in Petroleum & Oil/Gas Technical Document Identification.
+Your sole mission is to extract exactly 4 identification and chronological fields from the provided document into a valid JSON object:
+
+1. well_link: Specific well name or well identifier (e.g., "15-1-RD-1X", "LK-104", "Bạch Hổ-12X", "05-3-NH-1X").
+   - If the document is a regional or block-wide review and has no specific well name, output the Block/Field name (e.g., "BLOCKS 15-1 & 15-2").
+   - If completely missing, output "N/A".
+2. contract_name: Name of the Petroleum Block, Field, PSC Contract, or Project Name (e.g., "BLOCKS 15-1 & 15-2", "Lô 09-1", "NGAN HA (GALAXY)", "Cuu Long Basin").
+   - Strictly distinguish from specific well names. If missing, output "N/A".
+3. title: Full exact title of the report or document as written on the cover or title page. Correct minor obvious OCR character glitches if evident.
+4. public_date: Date of issuance, publication, or completion of the report (e.g., "1997-05-12", "May 1997", "12/05/1997", "1997"). If not found, output "Unknown".
+
+CRITICAL RULES:
+- Output ONLY a valid JSON object with keys: "well_link", "contract_name", "title", "public_date".
+- Do NOT invent or hallucinate any data. Do not include markdown codeblocks or extra text.
+"""
+
+IDENTITY_USER_PROMPT = """Document Content:
+---
+{text_content}
+---
+
+Extract the 4 identification fields into JSON:
+{
+  "well_link": "...",
+  "contract_name": "...",
+  "title": "...",
+  "public_date": "..."
+}
+"""
+
+# ==============================================================================
+# CỤM 2: CHỦ THỂ PHÁP NHÂN & TÁC GIẢ (CORPORATE ENTITIES & AUTHORS)
+# ==============================================================================
+ENTITIES_SYSTEM_PROMPT = """You are an expert AI specialized in Petroleum & Oil/Gas Corporate Entity and Author Extraction.
+Your sole mission is to extract exactly 3 corporate and authorship fields from the provided document into a valid JSON object:
+
+1. originator: The primary issuing entity, operating company, client, or owner who published or commissioned the report.
+   - Look for: "Prepared by <COMPANY>", "Operator: <COMPANY>", "Client: <COMPANY>", company logos, or issuing corporate headers (e.g., "Santos Ltd", "PetroVietnam", "Vietsovpetro", "AEDC Vietnam Ltd").
+   - Strictly extract the actual company named in the document; do NOT invent names.
+2. contractor: Technical contractor, service provider, or consulting company executing the work or specialized study (e.g., "Schlumberger", "Halliburton", "Baker Hughes", "Geco-Prakla").
+   - If this is an internal report or no secondary contractor is mentioned, output "N/A".
+3. author: Individual human person name(s) (engineers, geologists, authors, compilers).
+   - If the document is a corporate publication issued by a company without individual personal author names, output "None".
+   - NEVER put company names into author!
+
+CRITICAL RULES:
+- Output ONLY a valid JSON object with keys: "originator", "contractor", "author".
+- Do NOT invent or hallucinate any data. Do not include markdown codeblocks or extra text.
+"""
+
+ENTITIES_USER_PROMPT = """Document Content:
+---
+{text_content}
+---
+
+Extract the 3 entity and authorship fields into JSON:
+{
+  "originator": "...",
+  "contractor": "...",
+  "author": "..."
+}
+"""
+
+# ==============================================================================
+# LEGACY PROMPTS (DUY TRÌ TƯƠNG THÍCH NGƯỢC)
+# ==============================================================================
 SYSTEM_PROMPT = """You are an expert AI specialized in Multilingual Petroleum, Oil & Gas Engineering Document Information Extraction.
 Your task is to analyze the provided oil & gas technical report/document and extract exactly 10 fields into a valid JSON object:
 
@@ -10,12 +87,7 @@ Your task is to analyze the provided oil & gas technical report/document and ext
 7. author: The individual human author(s), compiler, or lead engineer. If the document is a corporate/company publication without individual author names, output "None" or "N/A". Never invent author names.
 8. language: Primary language of the document standardized in English (ISO 639 standard name, e.g., "English", "Vietnamese", "Russian", "French", "Japanese", "Chinese", "Bilingual", etc.). Always output the English name of the language.
 9. encl: Enclosures status or count. Look for sections like "LIST OF ENCLOSURES", "Enclosure(s)", "Attachments", "Приложения", "Диаграммы", "Phụ bản". State the exact count (e.g., "1", "3", "8", or "No").
-   NOTE:
-   - Do NOT confuse numbered report sections (such as "1/", "2/", "3/", "1.", "2.") or Roman numeral section headers (such as "VIII/ Диаграммы") with enclosure count!
-   - Do NOT count inline data tables (e.g., "Таблица 1", "Табл. 1", "Table 1", "Bảng 1") inside the body text as enclosures!
-   - If there are no separate attachments, maps, or appendices, output "No".
-   - The count in "encl" must strictly match the count of titles listed in "encl_name" (e.g., 1 title -> "1").
-10. encl_name: List of all separate enclosure, attachment, appendix, or diagram titles found in the document separated by semicolons ";". Extract only real titles of separate drawings, logs, maps, or appendices (e.g., "Приложение 1", "Phụ bản 1", "Enclosure 1"). Do NOT extract inline data tables ("Табл. 1"). If none, output "None".
+10. encl_name: List of all separate enclosure, attachment, appendix, or diagram titles found in the document separated by semicolons ";".
 
 CRITICAL INSTRUCTION:
 - Return ONLY valid JSON. Do not include markdown codeblocks (```json), explanations, or preambles.
