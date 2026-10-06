@@ -25,3 +25,4 @@ pycountry>=23.12.11
 tqdm>=4.66.0
 loguru>=0.7.2
 watchdog>=4.0.0
+mcp[cli]>=2.0.0
