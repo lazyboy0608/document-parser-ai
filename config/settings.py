@@ -10,6 +10,14 @@ class Settings(BaseSettings):
     ENABLE_HYBRID_VLM: bool = True
     OLLAMA_TIMEOUT: int = 180
 
+    # Ollama Performance Tuning (Tối ưu cho CPU Core i3 4 luồng)
+    OLLAMA_NUM_THREAD: int = 4
+    OLLAMA_NUM_CTX: int = 2048
+    OLLAMA_NUM_PREDICT: int = 256
+
+    # OCR Model Options (Ưu tiên Mobile cho môi trường CPU)
+    OCR_DET_MODEL: str = "PP-OCRv5_mobile_det"
+
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     INPUT_DIR: Path = BASE_DIR / "data" / "input_documents"

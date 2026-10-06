@@ -43,7 +43,12 @@ class LLMExtractor:
                     {"role": "user", "content": user_content},
                 ],
                 format="json",
-                options={"temperature": 0.0},
+                options={
+                    "temperature": 0.0,
+                    "num_thread": getattr(settings, "OLLAMA_NUM_THREAD", 4),
+                    "num_ctx": getattr(settings, "OLLAMA_NUM_CTX", 2048),
+                    "num_predict": getattr(settings, "OLLAMA_NUM_PREDICT", 256),
+                },
             )
             raw = response.get("message", {}).get("content", "{}")
             return json.loads(raw)
@@ -64,7 +69,12 @@ class LLMExtractor:
                     {"role": "user", "content": user_content},
                 ],
                 format="json",
-                options={"temperature": 0.0},
+                options={
+                    "temperature": 0.0,
+                    "num_thread": getattr(settings, "OLLAMA_NUM_THREAD", 4),
+                    "num_ctx": getattr(settings, "OLLAMA_NUM_CTX", 2048),
+                    "num_predict": getattr(settings, "OLLAMA_NUM_PREDICT", 256),
+                },
             )
             raw = response.get("message", {}).get("content", "{}")
             return json.loads(raw)

@@ -8,6 +8,8 @@ from typing import Union, List, Dict, Any, Tuple
 import numpy as np
 from PIL import Image
 
+from config.settings import settings
+
 
 class OCREngine:
     """
@@ -27,8 +29,9 @@ class OCREngine:
         if self._det_model is None or self._rec_model is None:
             try:
                 from paddlex import create_model
-                # Khởi tạo mô hình phát hiện vùng chữ và mô hình nhận diện
-                self._det_model = create_model("PP-OCRv5_server_det")
+                # Khởi tạo mô hình phát hiện vùng chữ Mobile siêu nhẹ và mô hình nhận diện
+                det_model_name = getattr(settings, "OCR_DET_MODEL", "PP-OCRv5_mobile_det")
+                self._det_model = create_model(det_model_name)
                 if self.lang in {"vi", "vie"}:
                     rec_model_name = "latin_PP-OCRv5_mobile_rec"
                 else:

@@ -249,10 +249,11 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
     title_val = str(data.get("title", "") or "").strip()
 
     # Nếu contract_name thực chất là tên Block (ví dụ: BLOCKS 15-1 & 15-2, BLOCK 15-1, LÔ 05-3)
-    if re.search(r"\b(?:BLOCKS?|LÔ)\s+[0-9\s&,\-]+", contract_val, re.IGNORECASE):
+    m_block_contract = re.search(r"\b((?:BLOCKS?|LÔ)\s+[0-9\-]+(?:\s*(?:&|AND|VÀ|,)\s*[0-9\-]+)*)", contract_val, re.IGNORECASE)
+    if m_block_contract:
         if well_val in {"N/A", "None", "nan", ""}:
             # Chuyển Block sang well_link
-            data["well_link"] = contract_val
+            data["well_link"] = re.sub(r"\s+(?:AND|VÀ)\s+", " & ", m_block_contract.group(1).strip(), flags=re.IGNORECASE)
             # Nếu originator có tên công ty (ví dụ: SANTOS LIMITED), contract_name sẽ là tên công ty/chủ quản
             orig_val = str(data.get("originator", "") or "").strip()
             if orig_val and orig_val not in {"N/A", "None", "Chưa rõ"}:
@@ -260,11 +261,13 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
             else:
                 data["contract_name"] = "N/A"
 
-    # Nếu well_link vẫn chưa có nhưng tiêu đề có số hiệu BLOCKS (ví dụ: BLOCK REVIEW BLOCKS 15-1 & 15-2)
-    if data.get("well_link") in {"N/A", "None", "nan", ""}:
-        m_block_in_title = re.search(r"\b(BLOCKS?\s+[0-9\s&,\-]+)", title_val, re.IGNORECASE)
-        if m_block_in_title:
-            data["well_link"] = m_block_in_title.group(1).strip()
+    # Nếu well_link vẫn chưa có nhưng tiêu đề có số hiệu BLOCKS (ví dụ: BLOCKS 15-1 & 15-2 hoặc BLOCKS 15-1 AND 15-2)
+    m_block_in_title = re.search(r"\b((?:BLOCKS?|LÔ)\s+[0-9\-]+(?:\s*(?:&|AND|VÀ|,)\s*[0-9\-]+)*)", title_val, re.IGNORECASE)
+    if m_block_in_title:
+        full_block_title = re.sub(r"\s+(?:AND|VÀ)\s+", " & ", m_block_in_title.group(1).strip(), flags=re.IGNORECASE)
+        curr_well = str(data.get("well_link", "") or "").strip()
+        if curr_well in {"N/A", "None", "nan", ""} or (curr_well.startswith("BLOCK") and len(curr_well) < len(full_block_title)):
+            data["well_link"] = full_block_title
 
     # Nhận diện đơn vị điều hành / công ty phát hành từ cấu trúc 'by <COMPANY>' hoặc pháp nhân dầu khí tổng quát
     # Áp dụng bình đẳng cho mọi công ty quốc tế & Việt Nam (SANTOS, AEDC, CUU LONG JOC, VIETSOVPETRO, JVPC, KNOC...)
