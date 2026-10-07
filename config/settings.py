@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     OCR_LANG: str = "vie+eng"
     HEAD_PAGES: int = 5
     TAIL_PAGES: int = 1
+    BACKWARD_SCAN_MAX_PAGES: int = 6
 
     # Hot Folder / Watcher Options
     WATCH_STABLE_SECONDS: float = 3.0

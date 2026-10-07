@@ -45,6 +45,61 @@ class OCREngine:
                 except Exception:
                     raise RuntimeError(f"Không thể khởi tạo mô hình OCR: {e}")
 
+    @staticmethod
+    def _sort_polys_reading_order(polys: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Sắp xếp các bounding box theo thứ tự đọc tự nhiên 2D của tài liệu:
+        - Gom các hộp chữ có độ cao Y tương đồng (cùng một dòng ngang) thành một hàng.
+        - Trong mỗi hàng, sắp xếp các hộp chữ từ trái qua phải theo trục X (x_min).
+        - Tránh lỗi đảo ngược thứ tự các từ cạnh nhau trên cùng một hàng (như Enclosure 2: <tên>).
+        """
+        if not polys:
+            return []
+
+        boxes = []
+        for p in polys:
+            y_min = float(np.min(p[:, 1]))
+            y_max = float(np.max(p[:, 1]))
+            x_min = float(np.min(p[:, 0]))
+            x_max = float(np.max(p[:, 0]))
+            boxes.append({
+                "poly": p,
+                "x_min": x_min,
+                "y_min": y_min,
+                "x_max": x_max,
+                "y_max": y_max,
+                "y_center": (y_min + y_max) / 2.0,
+                "h": y_max - y_min,
+            })
+
+        # Sắp xếp sơ bộ theo y_min
+        boxes.sort(key=lambda b: (b["y_min"], b["x_min"]))
+
+        # Gom thành các dòng (lines) dựa trên độ trùng lặp chiều dọc
+        lines: List[List[Dict[str, Any]]] = []
+        for b in boxes:
+            placed = False
+            for line in lines:
+                line_y_center = float(np.mean([item["y_center"] for item in line]))
+                line_h = float(np.mean([item["h"] for item in line]))
+                # Nếu tâm Y cách nhau dưới 50% chiều cao dòng -> cùng dòng ngang
+                if abs(b["y_center"] - line_y_center) < max(12.0, line_h * 0.5):
+                    line.append(b)
+                    placed = True
+                    break
+            if not placed:
+                lines.append([b])
+
+        # Sắp xếp các dòng theo Y (từ trên xuống), và trong từng dòng sắp xếp theo X (trái sang phải)
+        lines.sort(key=lambda l: float(np.mean([item["y_center"] for item in l])))
+        sorted_polys = []
+        for line in lines:
+            line.sort(key=lambda item: item["x_min"])
+            for item in line:
+                sorted_polys.append(item["poly"])
+
+        return sorted_polys
+
     def extract_text_with_scores(self, image_input: Union[str, Path, np.ndarray]) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Trích xuất văn bản kèm danh sách điểm số xác suất nhận diện (rec_score) của từng dòng chữ.
@@ -74,8 +129,8 @@ class OCREngine:
 
         polys = det_out[0]["dt_polys"]
 
-        # Sắp xếp các hộp văn bản theo thứ tự đọc từ trên xuống dưới (y_min)
-        sorted_polys = sorted(polys, key=lambda p: np.min(p[:, 1]))
+        # Sắp xếp các hộp văn bản theo thứ tự đọc tự nhiên 2D (trên xuống dưới, trái sang phải)
+        sorted_polys = self._sort_polys_reading_order(polys)
 
         # Cắt từng vùng văn bản
         cropped_boxes = []

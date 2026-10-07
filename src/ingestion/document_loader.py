@@ -30,6 +30,7 @@ class DocumentLoader:
                 file_path,
                 head_pages=settings.HEAD_PAGES,
                 tail_pages=settings.TAIL_PAGES,
+                backward_scan_pages=settings.BACKWARD_SCAN_MAX_PAGES,
                 ocr_lang=settings.OCR_LANG,
                 return_ocr_lines=True,
             )
