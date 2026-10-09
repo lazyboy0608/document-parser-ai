@@ -252,9 +252,10 @@ class DocumentPipeline:
 
         meta_dict = metadata.model_dump()
 
-        # 6. Phân cụm và tổ chức file vào thư mục đích theo Ngày & Ngôn ngữ: <output_dir>/<YYYYMMDD>/<LANGUAGE>/<file>
+        # 6. Phân cụm và tổ chức file vào thư mục đích theo Ngày & Thể loại tài liệu: <output_dir>/<YYYYMMDD>/<Document_Type>/<file>
         target_path = self.file_organizer.organize(
             source_file=file_path,
+            document_type=metadata.document_type,
             language=metadata.language,
             contract_name=metadata.contract_name,
             originator=metadata.originator,

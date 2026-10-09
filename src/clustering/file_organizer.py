@@ -28,9 +28,10 @@ def sanitize_folder_name(name: str, max_length: int = 50) -> str:
 
 class FileOrganizer:
     """
-    Gom cụm và sắp xếp các tệp tài liệu vào các thư mục theo Ngày và Ngôn ngữ (Language):
-    Cấu trúc: <base_output_dir>/<YYYYMMDD>/<LANGUAGE>/<ten_file> (Ví dụ: D:\\outputNLP\\20261002\\Russian\\C194_R1.DOC)
-    Thư mục ngày chỉ được tạo khi có tài liệu thực sự cần phân loại.
+    Gom cụm và sắp xếp các tệp tài liệu vào các thư mục theo Ngày và Thể loại tài liệu (Document Type):
+    Cấu trúc: <base_output_dir>/<YYYYMMDD>/<Document_Type>/<ten_file> 
+    (Ví dụ: D:\\outputNLP\\20261002\\Well_Proposal\\Report-sample.pdf)
+    Thư mục ngày và thể loại chỉ được tạo khi có tài liệu thực sự cần phân loại.
     """
     def __init__(self, base_output_dir: Path):
         self.base_output_dir = Path(base_output_dir).resolve()
@@ -39,6 +40,7 @@ class FileOrganizer:
     def organize(
         self,
         source_file: Path,
+        document_type: Optional[str] = None,
         language: Optional[str] = None,
         contract_name: Optional[str] = None,
         originator: Optional[str] = None,
@@ -46,8 +48,8 @@ class FileOrganizer:
         date_str: Optional[str] = None,
     ) -> Path:
         """
-        Di chuyển hoặc sao chép tệp vào thư mục theo Ngày (<YYYYMMDD>) và Ngôn ngữ chuẩn hóa.
-        Chỉ tạo thư mục ngày và ngôn ngữ khi có tệp thực sự cần chuyển vào (on-demand).
+        Di chuyển hoặc sao chép tệp vào thư mục theo Ngày (<YYYYMMDD>) và Thể loại tài liệu chuẩn hóa.
+        Chỉ tạo thư mục ngày và thể loại khi có tệp thực sự cần chuyển vào (on-demand).
         """
         source_file = Path(source_file)
         if not source_file.exists():
@@ -57,10 +59,10 @@ class FileOrganizer:
             from datetime import datetime
             date_str = datetime.now().strftime("%Y%m%d")
 
-        safe_lang = sanitize_folder_name(language or "Unknown")
+        safe_doc_type = sanitize_folder_name(document_type or "General_Report")
 
-        # Cấu trúc: <base_output_dir>/<YYYYMMDD>/<LANGUAGE>/<ten_file>
-        target_dir = self.base_output_dir / date_str / safe_lang
+        # Cấu trúc: <base_output_dir>/<YYYYMMDD>/<Document_Type>/<ten_file>
+        target_dir = self.base_output_dir / date_str / safe_doc_type
         target_dir.mkdir(parents=True, exist_ok=True)
 
         target_file_path = target_dir / source_file.name

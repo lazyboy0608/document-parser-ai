@@ -254,6 +254,12 @@ def evaluate_metadata_confidence(
                 field_warnings[field] = "Không xác định được ngôn ngữ chính của tài liệu."
             continue
 
+        # Trường document_type là trường phân loại thể loại tài liệu
+        if field == "document_type":
+            doc_type_score = 98.0 if val and val != "General_Report" else 88.0
+            field_confidences[field] = doc_type_score
+            continue
+
         # 3. Đối chiếu chéo giá trị trích xuất với mặt chữ OCR / văn bản gốc
         # Lưu ý: Nếu giá trị trường đã xuất hiện nguyên vẹn trong phần văn bản điện tử sạch (Digital Text Layer),
         # không bắt buộc phải tìm lại trong ocr_lines của riêng 1 trang bìa scan.

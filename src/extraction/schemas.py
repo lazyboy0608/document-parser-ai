@@ -38,6 +38,10 @@ class DocumentMetadata(BaseModel):
         default="English",
         description="Ngôn ngữ chính của tài liệu quy chuẩn bằng tiếng Anh (ISO 639)"
     )
+    document_type: str = Field(
+        default="General_Report",
+        description="Thể loại tài liệu kỹ thuật ngành Dầu khí (ví dụ: Well_Proposal, Final_Well_Report, Well_Logging_Report,...)"
+    )
     encl: str = Field(
         default="No",
         description="Trạng thái hoặc số lượng tài liệu đính kèm/phụ lục (ví dụ: Yes, No, 13 Enclosures, 3,...)"

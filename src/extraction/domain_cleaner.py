@@ -368,6 +368,65 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
             data["encl_name"] = "; ".join(valid_items)
             data["encl"] = str(len(valid_items))
 
+    # 6. Chuẩn hóa thể loại tài liệu (Document Type Classifier):
+    data["document_type"] = classify_document_type(
+        title=data.get("title", ""),
+        raw_text=raw_text or "",
+        current_type=data.get("document_type", ""),
+    )
+
     return DocumentMetadata(**data)
+
+
+VALID_DOCUMENT_TYPES = {
+    "Well_Proposal",
+    "Final_Well_Report",
+    "Well_Logging_Report",
+    "Geological_Report",
+    "Block_Review",
+    "Seismic_Report",
+    "General_Report",
+}
+
+
+def classify_document_type(title: str = "", raw_text: str = "", current_type: str = "") -> str:
+    """
+    Phân loại thể loại tài liệu (Document Type Classifier) chuẩn ngành Dầu khí:
+    Ưu tiên nhận diện theo mẫu từ khóa đặc trưng đa ngôn ngữ (Anh - Việt - Nga) từ Tiêu đề và Văn bản đầu.
+    Nếu không khớp quy tắc, sử dụng kết quả từ LLM nếu hợp lệ, ngược lại fallback về 'General_Report'.
+    """
+    text_to_check = f"{title}\n{raw_text[:1500]}".strip().lower()
+
+    # 1. Well Proposal (Đề cương / Thiết kế giếng khoan)
+    if re.search(r"\b(well\s+proposal|drilling\s+proposal|drilling\s+program|well\s+program|đề\s+cương\s+khoan|đề\s+cương\s+giếng|thiết\s+kế\s+giếng|kế\s+hoạch\s+khoan|проект\s+скважин|программ[аы]\s+бурен)", text_to_check):
+        return "Well_Proposal"
+
+    # 2. Final Well Report (Báo cáo hoàn công / kết thúc giếng khoan)
+    if re.search(r"\b(final\s+well\s+report|well\s+completion\s+report|completion\s+report|post-?drilling\s+report|end\s+of\s+well\s+report|báo\s+cáo\s+kết\s+thúc\s+giếng|báo\s+cáo\s+hoàn\s+thành\s+giếng|báo\s+cáo\s+hoàn\s+công\s+giếng|kết\s+thúc\s+thi\s+công\s+giếng|отчет\s+по\s+скважин|отчет\s+о\s+завершен|отчет\s+по\s+бурению)", text_to_check):
+        return "Final_Well_Report"
+
+    # 3. Well Logging Report (Báo cáo Địa vật lý / Carota / Kiểm tra xi măng & Ống chống)
+    if re.search(r"\b(гис|цементирован|колонн|каротаж|well\s+logging|wireline\s+log|cement\s+bond|cbl|vdl|casing\s+inspection|mud\s+logging|carota|địa\s+vật\s+lý\s+giếng|kiểm\s+tra\s+xi\s+măng|trám\s+xi\s+măng|ống\s+chống)", text_to_check):
+        return "Well_Logging_Report"
+
+    # 4. Geological Report (Báo cáo Địa chất / Sinh địa tầng / Tầng chứa)
+    if re.search(r"\b(geological\s+report|geology\s+report|geological\s+evaluation|stratigraph|biostratigraph|petrophysic|nghiên\s+cứu\s+địa\s+chất|báo\s+cáo\s+địa\s+chất|địa\s+chất\s+lỗ\s+khoan|địa\s+tầng|trầm\s+tích|геологическ|стратиграфи)", text_to_check):
+        return "Geological_Report"
+
+    # 5. Block Review (Báo cáo Đánh giá Lô / Bể trầm tích)
+    if re.search(r"\b(block\s+review|concession\s+review|basin\s+review|regional\s+study|basin\s+study|block\s+evaluation|đánh\s+giá\s+lô|tổng\s+quan\s+lô|đánh\s+giá\s+bể|обзор\s+блока|оценка\s+бассейн)", text_to_check):
+        return "Block_Review"
+
+    # 6. Seismic Report (Báo cáo Địa chấn / Minh giải địa chấn)
+    if re.search(r"\b(seismic\s+report|seismic\s+interpretation|seismic\s+acquisition|seismic\s+survey|địa\s+chấn|minh\s+giải\s+địa\s+chấn|thu\s+nổ\s+địa\s+chấn|сейсмическ|сейсморазвед)", text_to_check):
+        return "Seismic_Report"
+
+    # 7. Nếu LLM đã phân loại đúng vào 1 trong các nhóm hợp lệ
+    clean_curr = re.sub(r"[^\w]", "_", str(current_type or "").strip())
+    for valid_type in VALID_DOCUMENT_TYPES:
+        if clean_curr.lower() == valid_type.lower():
+            return valid_type
+
+    return "General_Report"
 
 

@@ -23,6 +23,7 @@ class ExcelExporter:
         "CONTRACTOR",
         "AUTHOR",
         "LANGUAGE",
+        "DOCUMENT TYPE",
         "ENCL",
         "Encl Name",
         "Độ tin cậy",
@@ -40,6 +41,7 @@ class ExcelExporter:
         "contractor": "CONTRACTOR",
         "author": "AUTHOR",
         "language": "LANGUAGE",
+        "document_type": "DOCUMENT TYPE",
         "encl": "ENCL",
         "encl_name": "Encl Name",
     }
@@ -157,6 +159,7 @@ class ExcelExporter:
             "CONTRACTOR": 20,
             "AUTHOR": 28,
             "LANGUAGE": 14,
+            "DOCUMENT TYPE": 20,
             "ENCL": 8,
             "Encl Name": 48,
             "Độ tin cậy": 14,
@@ -176,8 +179,11 @@ class ExcelExporter:
             rows = []
             for idx, item in enumerate(data, 1):
                 meta = item.get("metadata", {}) or {}
-                from src.extraction.domain_cleaner import standardize_language
+                from src.extraction.domain_cleaner import standardize_language, classify_document_type
                 sample_txt = f"{meta.get('title', '')} {meta.get('encl_name', '')}".strip()
+                doc_type_val = meta.get("document_type")
+                if not doc_type_val or doc_type_val == "General_Report":
+                    doc_type_val = classify_document_type(title=meta.get("title", ""), current_type=doc_type_val or "")
                 conf_val = float(meta.get("confidence_score", 0.0) or 0.0)
                 conf_display = f"{conf_val:.1f}%" if conf_val > 0 else "N/A"
                 rows.append({
@@ -191,6 +197,7 @@ class ExcelExporter:
                     "CONTRACTOR": meta.get("contractor", ""),
                     "AUTHOR": meta.get("author", ""),
                     "LANGUAGE": standardize_language(meta.get("language", "English"), sample_text=sample_txt),
+                    "DOCUMENT TYPE": doc_type_val,
                     "ENCL": meta.get("encl", "No"),
                     "Encl Name": meta.get("encl_name", "None"),
                     "Độ tin cậy": conf_display,

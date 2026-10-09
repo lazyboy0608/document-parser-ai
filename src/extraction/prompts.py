@@ -19,9 +19,17 @@ Your sole mission is to extract exactly 4 identification and chronological field
    - Strictly distinguish from specific well names. If missing, output "N/A".
 3. title: Full exact title of the report or document as written on the cover or title page. Correct minor obvious OCR character glitches if evident.
 4. public_date: Date of issuance, publication, or completion of the report (e.g., "1997-05-12", "May 1997", "12/05/1997", "1997"). If not found, output "Unknown".
+5. document_type: Standardized technical document category. Choose strictly one of:
+   - "Well_Proposal": Well proposals, drilling programs, well design plans.
+   - "Final_Well_Report": Final well reports, completion reports, post-drilling reports.
+   - "Well_Logging_Report": Well logging, wireline logs, cement bond logs (CBL/VDL), casing inspections, GIS evaluations.
+   - "Geological_Report": Geological evaluations, stratigraphy studies, biostratigraphy reports.
+   - "Block_Review": Block reviews, regional basin studies, concession evaluations.
+   - "Seismic_Report": 2D/3D seismic acquisition, processing, interpretation.
+   - "General_Report": Other general technical or engineering reports.
 
 CRITICAL RULES:
-- Output ONLY a valid JSON object with keys: "well_link", "contract_name", "title", "public_date".
+- Output ONLY a valid JSON object with keys: "well_link", "contract_name", "title", "public_date", "document_type".
 - Do NOT invent or hallucinate any data. Do not include markdown codeblocks or extra text.
 """
 
@@ -30,12 +38,13 @@ IDENTITY_USER_PROMPT = """Document Content:
 {text_content}
 ---
 
-Extract the 4 identification fields into JSON:
+Extract the 5 identification fields into JSON:
 {
   "well_link": "...",
   "contract_name": "...",
   "title": "...",
-  "public_date": "..."
+  "public_date": "...",
+  "document_type": "..."
 }
 """
 
