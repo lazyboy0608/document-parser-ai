@@ -17,7 +17,7 @@ paddlepaddle>=2.6.0
 paddleocr>=2.7.0
 
 # Deduplication & Algorithms
-datasketch>=1.6.4
+simhash>=2.1.2
 langdetect>=1.0.9
 pycountry>=23.12.11
 

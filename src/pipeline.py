@@ -6,7 +6,7 @@ from src.utils.logger import logger
 from src.utils.state_tracker import StateTracker
 from src.ingestion.document_loader import DocumentLoader
 from src.deduplication.exact_dedup import ExactDeduplicator
-from src.deduplication.semantic_dedup import SemanticDeduplicator
+from src.deduplication.simhash_dedup import SimHashDeduplicator
 from src.extraction.llm_extractor import LLMExtractor
 from src.extraction.vlm_extractor import VLMExtractor
 from src.extraction.domain_cleaner import clean_metadata_fields
@@ -38,7 +38,9 @@ class DocumentPipeline:
         self.exact_dedup = ExactDeduplicator()
         # Nạp danh sách mã băm SHA-256 từ các tệp THỰC SỰ ĐANG TỒN TẠI trên đĩa để nhận diện trùng lặp
         self.exact_dedup.seen_hashes.update(self.state_tracker.get_active_hashes())
-        self.semantic_dedup = SemanticDeduplicator(threshold=settings.SIMILARITY_THRESHOLD)
+        # Nạp bộ lọc trùng lặp nội dung mờ bền vững SimHash 64-bit và kho mã băm lịch sử từ SQLite
+        self.simhash_dedup = SimHashDeduplicator(threshold_bits=settings.SIMHASH_THRESHOLD_BITS)
+        self.active_simhashes: Dict[str, str] = self.state_tracker.get_active_simhashes()
         self.llm_extractor = LLMExtractor()
         self.vlm_extractor = VLMExtractor()
         self.file_organizer = FileOrganizer(self.output_dir)
@@ -179,10 +181,19 @@ class DocumentPipeline:
             self.state_tracker.save_state(str(file_path), file_hash, "ERROR")
             return None
 
-        # 4. Lọc gần trùng lặp (Tầng 2 - Semantic MinHash)
-        is_semantic_dup, matching_ids = self.semantic_dedup.check_and_add(str(file_path), raw_text)
-        if is_semantic_dup:
-            logger.warning(f"-> Gần trùng lặp nội dung với: {matching_ids[0]}")
+        # 4. Lọc gần trùng lặp (Tầng 2 - Persistent SimHash 64-bit)
+        simhash_hex = self.simhash_dedup.compute_simhash(raw_text)
+        is_semantic_dup, matched_orig, simhash_dist = self.simhash_dedup.find_near_duplicate(
+            simhash_hex, self.active_simhashes
+        )
+        sim_pct = self.simhash_dedup.similarity_percentage(simhash_dist)
+
+        if is_semantic_dup and matched_orig:
+            orig_name = Path(matched_orig).name
+            logger.warning(
+                f"-> [SIMHASH] Gần trùng lặp nội dung ({sim_pct}% tương đồng, lệch {simhash_dist}/64 bits) "
+                f"với tài liệu gốc: {orig_name}"
+            )
 
         # 5. Trích xuất metadata có cấu trúc (Cơ chế Lai 2 Tầng - Two-Tier Hybrid Architecture)
         metadata = None
@@ -269,12 +280,16 @@ class DocumentPipeline:
         if self.mode == "move" and target_path != file_path:
             self.state_tracker.delete_state(str(file_path))
             self.state_tracker.save_state(
-                str(target_path), file_hash, "COMPLETED", is_duplicate=is_semantic_dup, metadata=meta_dict
+                str(target_path), file_hash, "COMPLETED", is_duplicate=is_semantic_dup, metadata=meta_dict, simhash=simhash_hex
             )
         else:
             self.state_tracker.save_state(
-                str(final_path), file_hash, "COMPLETED", is_duplicate=is_semantic_dup, metadata=meta_dict
+                str(final_path), file_hash, "COMPLETED", is_duplicate=is_semantic_dup, metadata=meta_dict, simhash=simhash_hex
             )
+
+        # Cập nhật mã SimHash vào danh sách nhớ của phiên làm việc (nếu là tài liệu gốc)
+        if not is_semantic_dup:
+            self.active_simhashes[str(final_path)] = simhash_hex
 
         return {
             "file_name": target_path.name,

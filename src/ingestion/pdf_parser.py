@@ -119,7 +119,7 @@ def extract_text_from_pdf(
     max_scan_page = min(total_pages, max(25, int(total_pages * 0.35)))
 
     content_discovery_keywords = re.compile(
-        r"(enclosure|phụ\s*bản|phụ\s*lục|приложени|contents|mục\s*lục|approval|phê\s*duyệt|signoff|sign-off|drawing\s*list)",
+        r"(enclosure|phụ\s*bản|phụ\s*lục|приложени|contents|mục\s*lục|danh\s*mục|kí\s*hiệu|ký\s*hiệu|viết\s*tắt|bảng\s*biểu|hình\s*vẽ|abbreviations|approval|phê\s*duyệt|signoff|sign-off|drawing\s*list)",
         re.IGNORECASE,
     )
     body_chapter_keywords = re.compile(
@@ -127,7 +127,10 @@ def extract_text_from_pdf(
         re.IGNORECASE,
     )
 
-    found_enclosure_or_toc = False
+    found_enclosure_or_toc = any(
+        bool(content_discovery_keywords.search(doc[idx].get_text("text")[:1000]))
+        for idx in target_page_indices
+    )
 
     for p_idx in range(start_dynamic_scan, max_scan_page):
         if p_idx in target_page_indices:
@@ -139,12 +142,15 @@ def extract_text_from_pdf(
 
             if has_digital_text:
                 # Nếu có text layer: kiểm tra từ khóa siêu tốc (< 1ms)
-                if content_discovery_keywords.search(sample_text):
+                if body_chapter_keywords.search(sample_text):
+                    # Dừng sớm khi chính thức bắt đầu thân bài (Chương 1 / Phần 1 / Section 1)
+                    break
+                elif content_discovery_keywords.search(sample_text):
                     target_page_indices.append(p_idx)
                     found_enclosure_or_toc = True
-                elif found_enclosure_or_toc and body_chapter_keywords.search(sample_text):
-                    # Dừng sớm khi đã qua mục lục và chính thức bắt đầu Chương 1
-                    break
+                elif found_enclosure_or_toc:
+                    # Tiếp tục gom các trang thuộc phần đầu kéo dài (như trang kế tiếp của danh mục viết tắt/hình vẽ) trước khi vào Chương 1
+                    target_page_indices.append(p_idx)
             else:
                 # Trang scan thuần (ảnh 100%): Quét dải băng tiêu đề Top 20% siêu tốc (~0.3s)
                 # Chỉ quét dải băng cho tối đa 10 trang scan kế tiếp để tối ưu thời gian

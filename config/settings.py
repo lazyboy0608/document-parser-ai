@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # Processing Options
     BATCH_SIZE: int = 10
+    SIMHASH_THRESHOLD_BITS: int = 3  # Khoảng cách Hamming <= 3 bits (~95% tương đồng nội dung)
     SIMILARITY_THRESHOLD: float = 0.85
     OCR_LANG: str = "vie+eng"
     HEAD_PAGES: int = 5
