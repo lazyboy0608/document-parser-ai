@@ -240,12 +240,15 @@ class HotFolderWatcher:
                 if result is not None:
                     daily_report = self.custom_output_report or (self.output_dir / today_str / f"tong_hop_tai_lieu_{today_str}.xlsx")
                     # Cập nhật ngay dòng mới vào file Excel tổng hợp theo ngày
-                    self.pipeline.export_current_report(
-                        input_dir=self.watch_dir,
-                        output_report=daily_report,
-                        date_str=today_str
-                    )
-                    logger.info(f"✅ [WATCHER] Đã xử lý, phân loại & cập nhật Excel thành công cho: {file_path.name}")
+                    try:
+                        self.pipeline.export_current_report(
+                            input_dir=self.watch_dir,
+                            output_report=daily_report,
+                            date_str=today_str
+                        )
+                        logger.info(f"✅ [WATCHER] Đã xử lý, phân loại & cập nhật Excel thành công cho: {file_path.name}")
+                    except Exception as export_err:
+                        logger.error(f"⚠️ [WATCHER] Không thể cập nhật báo cáo Excel do lỗi mạng LAN/IO: {export_err}")
             except Exception as e:
                 logger.error(f"❌ [WATCHER] Lỗi không mong muốn khi xử lý {file_path.name}: {e}")
             finally:
@@ -282,7 +285,66 @@ class HotFolderWatcher:
 
         try:
             while not self.stop_event.is_set():
-                time.sleep(1.0)
+                time.sleep(2.0)
+                if self.stop_event.is_set():
+                    break
+                # Kiểm tra trạng thái hoạt động (Heartbeat) của Observer và thư mục Hot Folder trên mạng LAN
+                observer_alive = False
+                try:
+                    observer_alive = self.observer.is_alive()
+                except Exception:
+                    observer_alive = False
+
+                dir_accessible = False
+                try:
+                    dir_accessible = self.watch_dir.exists()
+                except Exception:
+                    dir_accessible = False
+
+                if not observer_alive or not dir_accessible:
+                    logger.warning(
+                        f"⚠️ [WATCHER] Phát hiện mất kết nối tới Hot Folder ({self.watch_dir}) "
+                        f"hoặc luồng Observer đã dừng (Observer alive: {observer_alive}, Dir exists: {dir_accessible}). "
+                        "Bắt đầu chu trình tự phục hồi kết nối..."
+                    )
+                    # Dừng observer cũ nếu còn sót
+                    try:
+                        if self.observer.is_alive():
+                            self.observer.stop()
+                            self.observer.join(timeout=2.0)
+                    except Exception:
+                        pass
+
+                    # Vòng lặp thăm dò kết nối lại (Probing loop)
+                    reconnected = False
+                    while not self.stop_event.is_set():
+                        try:
+                            if self.watch_dir.exists():
+                                logger.info(f"🔄 [WATCHER] Đã khôi phục kết nối tới {self.watch_dir}! Đang khởi động lại Observer...")
+                                self.observer = Observer()
+                                event_handler = HotFolderEventHandler(
+                                    self.file_queue, self.queued_paths, self.lock, output_report=self.custom_output_report
+                                )
+                                self.observer.schedule(event_handler, str(self.watch_dir), recursive=True)
+                                self.observer.start()
+                                reconnected = True
+                                break
+                        except Exception as probe_err:
+                            logger.debug(f"Đang chờ mạng LAN/Hot Folder phục hồi: {probe_err}")
+
+                        time.sleep(3.0)
+
+                    if reconnected and not self.stop_event.is_set():
+                        logger.info("🔍 [WATCHER] Chạy quét bù (Catch-up Scan) cho các tệp đã upload trong thời gian mất mạng...")
+                        from datetime import datetime
+                        today_str = datetime.now().strftime("%Y%m%d")
+                        daily_report = self.custom_output_report or (self.output_dir / today_str / f"tong_hop_tai_lieu_{today_str}.xlsx")
+                        try:
+                            self.pipeline.run(input_dir=self.watch_dir, output_report=daily_report, date_str=today_str)
+                            logger.info("✅ [WATCHER] Quét bù hoàn tất. Đã tiếp tục lắng nghe sự kiện bình thường.")
+                        except Exception as catch_err:
+                            logger.error(f"Lỗi khi thực hiện quét bù sau phục hồi mạng: {catch_err}")
+
         except KeyboardInterrupt:
             logger.info("🛑 Đang nhận tín hiệu dừng (Ctrl+C)...")
             self.stop()
@@ -291,7 +353,10 @@ class HotFolderWatcher:
         """Dừng dịch vụ an toàn."""
         self.stop_event.set()
         self.file_queue.put(None)
-        if self.observer.is_alive():
-            self.observer.stop()
-            self.observer.join(timeout=5.0)
+        try:
+            if getattr(self, "observer", None) and self.observer.is_alive():
+                self.observer.stop()
+                self.observer.join(timeout=5.0)
+        except Exception:
+            pass
         logger.info("👋 Dịch vụ Hot Folder Watcher đã dừng an toàn.")

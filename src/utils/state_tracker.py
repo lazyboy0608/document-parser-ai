@@ -108,6 +108,26 @@ class StateTracker:
             ))
             conn.commit()
 
+    @staticmethod
+    def _is_volume_accessible(path: Path) -> bool:
+        """
+        Kiểm tra xem phân vùng lưu trữ hoặc thư mục chứa tệp có đang kết nối/khả dụng không.
+        Giúp phân biệt giữa:
+        1. Người dùng chủ động xóa tệp (thư mục cha vẫn truy cập bình thường nhưng tệp không còn).
+        2. Mạng LAN bị ngắt kết nối (toàn bộ đường dẫn mạng / ổ đĩa chia sẻ không thể truy cập).
+        """
+        try:
+            parent = path.parent
+            if parent.exists():
+                return True
+            # Kiểm tra phân vùng gốc ổ đĩa hoặc điểm chia sẻ UNC (vd: D:\, Z:\, \\server\share)
+            root = Path(path.anchor)
+            if root and root.exists():
+                return True
+            return False
+        except (OSError, PermissionError):
+            return False
+
     def delete_state(self, file_path: str):
         """Xóa trạng thái của tệp khỏi cơ sở dữ liệu (ví dụ khi tệp được di chuyển sang vị trí mới)."""
         norm_p = self._norm(file_path)
@@ -119,7 +139,8 @@ class StateTracker:
     def cleanup_missing_files(self) -> int:
         """
         Dọn dẹp các bản ghi trong SQLite nếu tệp vật lý không còn tồn tại trên đĩa.
-        Giúp đồng bộ trạng thái khi người dùng chủ động xóa tệp cũ để test lại hoặc xử lý lại từ đầu.
+        Có cơ chế bảo vệ Network Accessibility Guard: Chỉ xóa khi phân vùng/thư mục chứa tệp
+        thực sự khả dụng (tránh xóa nhầm toàn bộ CSDL khi mất mạng LAN hoặc ổ đĩa mạng chưa mount).
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -129,6 +150,9 @@ class StateTracker:
             for (fp,) in rows:
                 try:
                     p = Path(fp)
+                    # Nếu phân vùng lưu trữ / mạng LAN không khả dụng, tuyệt đối không xóa bản ghi
+                    if not self._is_volume_accessible(p):
+                        continue
                     if not p.exists():
                         cursor.execute("DELETE FROM processed_files WHERE file_path = ?", (fp,))
                         deleted_count += 1
@@ -159,8 +183,8 @@ class StateTracker:
 
     def get_active_hashes(self) -> set[str]:
         """
-        Lấy toàn bộ mã băm SHA-256 của các tệp đã xử lý thành công mà tệp đích THỰC SỰ ĐANG TỒN TẠI trên đĩa.
-        Nếu tệp vật lý đã bị xóa khỏi đĩa, mã băm đó không được coi là trùng lặp nữa.
+        Lấy toàn bộ mã băm SHA-256 của các tệp đã xử lý thành công.
+        Nếu tệp nằm trên ổ đĩa mạng đang tạm thời offline, vẫn bảo toàn mã băm để đối chiếu trùng lặp.
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -168,7 +192,11 @@ class StateTracker:
             active_hashes = set()
             for fp, fhash in cursor.fetchall():
                 try:
-                    if Path(fp).exists():
+                    p = Path(fp)
+                    if p.exists():
+                        active_hashes.add(fhash)
+                    elif not self._is_volume_accessible(p):
+                        # Phân vùng mạng đang tạm thời ngắt kết nối -> vẫn giữ mã băm
                         active_hashes.add(fhash)
                 except Exception:
                     pass
@@ -180,9 +208,9 @@ class StateTracker:
 
     def get_active_simhashes(self) -> Dict[str, str]:
         """
-        Lấy danh sách mã SimHash {file_path: simhash} của các tệp đã xử lý thành công
-        mà tệp đích THỰC SỰ ĐANG TỒN TẠI trên đĩa.
+        Lấy danh sách mã SimHash {file_path: simhash} của các tệp đã xử lý thành công.
         Chỉ lấy các tệp gốc không bị đánh dấu trùng lặp để làm mốc đối chiếu chuẩn.
+        Nếu tệp nằm trên ổ đĩa mạng đang tạm thời offline, vẫn bảo toàn SimHash.
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -193,7 +221,11 @@ class StateTracker:
             active_simhashes = {}
             for fp, shash in cursor.fetchall():
                 try:
-                    if Path(fp).exists():
+                    p = Path(fp)
+                    if p.exists():
+                        active_simhashes[fp] = shash
+                    elif not self._is_volume_accessible(p):
+                        # Phân vùng mạng đang tạm thời ngắt kết nối -> vẫn giữ mã SimHash
                         active_simhashes[fp] = shash
                 except Exception:
                     pass

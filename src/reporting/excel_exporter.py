@@ -1,9 +1,15 @@
 from pathlib import Path
 from typing import List, Dict, Any
+import uuid
+import shutil
+import logging
 import pandas as pd
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
+from config.settings import settings
+
+logger = logging.getLogger("NLP_Pipeline")
 
 
 class ExcelExporter:
@@ -218,21 +224,65 @@ class ExcelExporter:
                 })
             df = pd.DataFrame(rows)
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        # 1. Ghi tệp Excel vào bộ nhớ tạm cục bộ trước (Local-First Staging)
+        # Giúp tránh làm hỏng hoặc xóa trắng (0 byte) tệp Excel trên ổ đĩa mạng LAN khi mất kết nối giữa chừng
+        local_temp_dir = settings.CACHE_DIR / "temp_reports"
+        local_temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_export_file = local_temp_dir / f"export_{uuid.uuid4().hex[:8]}_{output_path.name}"
+
         try:
-            with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            with pd.ExcelWriter(temp_export_file, engine="openpyxl") as writer:
                 df.to_excel(writer, index=False, sheet_name="Báo cáo Dầu khí")
                 ws = writer.sheets["Báo cáo Dầu khí"]
                 cls._apply_formatting_and_highlights(ws, data)
-            return output_path
+        except Exception as write_err:
+            logger.error(f"Lỗi khi khởi tạo báo cáo Excel tạm cục bộ: {write_err}")
+            if temp_export_file.exists():
+                try:
+                    temp_export_file.unlink()
+                except Exception:
+                    pass
+            raise write_err
+
+        # 2. Chuyển tệp từ local lên thư mục đích (hỗ trợ mạng LAN với cơ chế Two-Phase Safe Copy)
+        target_dir = output_path.parent
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_tmp = target_dir / f"{output_path.name}.nlp_tmp"
+
+        def _do_safe_deploy(target_dest: Path) -> Path:
+            shutil.copy2(temp_export_file, target_tmp)
+            if target_tmp.stat().st_size != temp_export_file.stat().st_size:
+                raise IOError(f"Lỗi truyền tải Excel: kích thước không khớp ({target_tmp.stat().st_size} != {temp_export_file.stat().st_size})")
+            target_tmp.replace(target_dest)
+            return target_dest
+
+        try:
+            deployed_path = _do_safe_deploy(output_path)
+            return deployed_path
         except PermissionError:
+            # Nếu file Excel đích đang bị người dùng khác mở khóa trên mạng LAN, lưu bản sao có timestamp
             import datetime
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = output_path.parent / f"{output_path.stem}_{ts}.xlsx"
-            with pd.ExcelWriter(backup_path, engine="openpyxl") as writer:
-                df.to_excel(writer, index=False, sheet_name="Báo cáo Dầu khí")
-                ws = writer.sheets["Báo cáo Dầu khí"]
-                cls._apply_formatting_and_highlights(ws, data)
-            print(f"[CẢNH BÁO] Tệp {output_path.name} đang bị mở khóa trong ứng dụng khác. Đã lưu báo cáo tại: {backup_path.name}")
-            return backup_path
+            backup_path = target_dir / f"{output_path.stem}_{ts}.xlsx"
+            logger.warning(f"Tệp {output_path.name} đang bị mở khóa trong ứng dụng khác. Đang lưu báo cáo phụ: {backup_path.name}")
+            try:
+                deployed_path = _do_safe_deploy(backup_path)
+                return deployed_path
+            except Exception as e2:
+                logger.error(f"Lưu file Excel phụ thất bại trên mạng LAN: {e2}")
+                raise e2
+        except Exception as lan_err:
+            logger.error(f"Lỗi xuất báo cáo Excel lên thư mục đích/LAN ({output_path}): {lan_err}")
+            if target_tmp.exists():
+                try:
+                    target_tmp.unlink()
+                except Exception:
+                    pass
+            raise lan_err
+        finally:
+            if temp_export_file.exists():
+                try:
+                    temp_export_file.unlink()
+                except Exception:
+                    pass
 

@@ -33,8 +33,6 @@ class DocumentPipeline:
         self.output_dir = Path(output_dir or settings.OUTPUT_DIR).resolve()
         self.mode = mode
         self.state_tracker = StateTracker(settings.CACHE_DIR / "pipeline_state.db")
-        # Tự động dọn dẹp các bản ghi cũ của các tệp không còn tồn tại trên đĩa (tránh duplicate ảo)
-        self.state_tracker.cleanup_missing_files()
         self.exact_dedup = ExactDeduplicator()
         # Nạp danh sách mã băm SHA-256 từ các tệp THỰC SỰ ĐANG TỒN TẠI trên đĩa để nhận diện trùng lặp
         self.exact_dedup.seen_hashes.update(self.state_tracker.get_active_hashes())
@@ -108,12 +106,17 @@ class DocumentPipeline:
                     updated_dict = meta_obj.model_dump()
                     target_path = self.file_organizer.organize(
                         source_file=file_path,
+                        document_type=getattr(meta_obj, "document_type", None),
                         language=meta_obj.language,
                         contract_name=meta_obj.contract_name,
                         originator=meta_obj.originator,
                         mode=self.mode,
                         date_str=date_str,
                     )
+                    if not target_path:
+                        logger.error(f"Không thể di chuyển file cached {file_path.name} do lỗi truyền tải mạng LAN.")
+                        return None
+
                     final_path = target_path if self.mode == "move" else file_path
                     if self.mode == "move" and target_path != file_path:
                         self.state_tracker.delete_state(str(file_path))
@@ -160,6 +163,10 @@ class DocumentPipeline:
                 mode=self.mode,
                 date_str=date_str,
             )
+            if not target_path:
+                logger.error(f"Không thể di chuyển file trùng lặp {file_path.name} do lỗi truyền tải mạng LAN.")
+                return None
+
             final_path = target_path if self.mode == "move" else file_path
             if self.mode == "move" and target_path != file_path:
                 self.state_tracker.delete_state(str(file_path))
@@ -273,6 +280,11 @@ class DocumentPipeline:
             mode=self.mode,
             date_str=date_str,
         )
+
+        if not target_path:
+            logger.error(f"Không thể di chuyển file {file_path.name} sang thư mục đích do lỗi mạng LAN/IO. Không ghi nhận COMPLETED.")
+            self.state_tracker.save_state(str(file_path), file_hash, "ERROR")
+            return None
 
         final_path = target_path if self.mode == "move" else file_path
 
