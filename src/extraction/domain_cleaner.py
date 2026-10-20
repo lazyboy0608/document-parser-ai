@@ -31,6 +31,42 @@ OIL_GAS_CORRECTIONS = [
 ]
 
 
+# Biểu thức chính quy phát hiện câu/cụm từ báo thiếu thông tin đa ngôn ngữ do LLM tạo ra
+MISSING_PHRASE_REGEX = re.compile(
+    r"^(?:"
+    # Tiếng Việt: Không có thông tin, không đề cập, chưa rõ, không tìm thấy...
+    r"(?:không\s+(?:có\s+|được\s+|thấy\s+)?(?:thông\s+tin|dữ\s+liệu|đề\s+cập|rõ|tìm\s+thấy|nhắc\s+đến|ghi\s+nhận))|"
+    r"(?:chưa\s+(?:có\s+)?(?:thông\s+tin|rõ|cung\s+cấp|xác\s+định|đề\s+cập))|"
+    r"(?:không\s+(?:thấy|rõ|có))|"
+    r"(?:chưa\s+rõ)|"
+    r"(?:văn\s+bản\s+không\s+(?:có|đề\s+cập|nhắc\s+đến))|"
+    r"(?:đoạn\s+văn\s+không\s+(?:có|đề\s+cập))|"
+    r"(?:tài\s+liệu\s+không\s+(?:có|đề\s+cập|nhắc\s+đến))|"
+    # Tiếng Anh
+    r"(?:not\s+(?:mentioned|provided|available|found|specified|applicable|stated))|"
+    r"(?:no\s+(?:information|data|details|mention))|"
+    r"(?:unknown|unspecified|none|n/?a|nan)"
+    r")\b",
+    re.IGNORECASE
+)
+
+
+def is_missing_or_unknown_phrase(val: Any) -> bool:
+    """Kiểm tra chuỗi có phải câu báo thiếu thông tin của LLM (tiếng Việt, tiếng Anh, tiếng Trung)."""
+    if val is None:
+        return True
+    s = str(val).strip()
+    if not s or s.lower() in {"", "n/a", "na", "none", "no", "unknown", "chưa rõ", "null", "nan"}:
+        return True
+    # Kiểm tra chuỗi tiếng Trung báo thiếu
+    if re.search(r"[\u4e00-\u9fff]", s) and any(kw in s for kw in ["未", "无", "不", "暂", "具体"]):
+        return True
+    # Kiểm tra tiếng Việt / tiếng Anh bằng Regex
+    if MISSING_PHRASE_REGEX.search(s):
+        return True
+    return False
+
+
 def clean_oil_gas_text(text: str) -> str:
     """
     Sửa các lỗi biến dạng ký tự điển hình do scan mờ hoặc máy đánh chữ thời kỳ cũ.
@@ -222,12 +258,16 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
     - Tự động nhận diện và quy chuẩn trường Language theo chuẩn quốc tế ISO 639 (langdetect + pycountry)
     """
     data = metadata.model_dump()
-    for field in ["title", "well_link", "contract_name", "originator", "contractor", "author", "encl_name"]:
+    for field in ["title", "well_link", "contract_name", "originator", "contractor", "author", "public_date", "encl_name"]:
         val = data.get(field, "")
-        if isinstance(val, str) and val not in {"N/A", "None", "Chưa rõ"}:
-            # Lọc bỏ các chuỗi tiếng Trung báo thiếu thông tin của Qwen (ví dụ: '未提供具体合同名称', '未提及', '无')
-            if re.search(r"[\u4e00-\u9fff]", val) and any(kw in val for kw in ["未", "无", "不", "暂", "具体"]):
-                data[field] = "N/A"
+        if isinstance(val, str):
+            if is_missing_or_unknown_phrase(val):
+                if field in {"title", "public_date"}:
+                    data[field] = "Chưa rõ"
+                elif field == "author":
+                    data[field] = "None"
+                else:
+                    data[field] = "N/A"
             else:
                 data[field] = clean_oil_gas_text(val)
 
@@ -242,6 +282,14 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
             m_ru = re.search(r"(?:Скважина|Скв\.?)\s*[:№\s]*([0-9A-Za-zА-Яа-я\-]+(?:\s*\([^\)]+\))?)", raw_text, re.IGNORECASE)
             if m_ru:
                 data["well_link"] = m_ru.group(1).strip()
+
+    # 1.5. Khử ảo giác giếng khoan từ các cơ quan hành chính/học viện/khoa phi dầu khí
+    well_val_str = str(data.get("well_link", "") or "").strip()
+    if well_val_str and well_val_str not in {"N/A", "None", "Chưa rõ"}:
+        has_well_keyword = bool(re.search(r"\b(?:LK|WELL|BLOCK|BLOCKS|LÔ|LỖ\s+KHOAN|SKV|Скважина)\b", well_val_str, re.IGNORECASE))
+        if not has_well_keyword:
+            if re.search(r"\b(?:H\s*VIỆN|HỌC\s*VIỆN|KHOA\b|TRƯỜNG\b|ĐẠI\s*HỌC|PHÒNG\b|BAN\b|SINH\s*VIÊN)\b", well_val_str, re.IGNORECASE):
+                data["well_link"] = "N/A"
 
     # 2. Xử lý trường hợp Well link vs Contract Name (VD: BLOCKS 15-1 & 15-2 bị gán nhầm vào Contract Name)
     contract_val = str(data.get("contract_name", "") or "").strip()
@@ -304,7 +352,7 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
 
     # 4. Khử Hallucination Tác giả (Author):
     author_val = str(data.get("author", "") or "").strip()
-    if author_val.lower() in {"none", "n/a", "no", "không có", "unknown", "chưa rõ", "none.", ""}:
+    if is_missing_or_unknown_phrase(author_val):
         data["author"] = "None"
     else:
         # Nếu ngôn ngữ tài liệu là tiếng Anh hoặc tiếng Nga, tác giả phải xuất hiện thực tế trong văn bản gốc

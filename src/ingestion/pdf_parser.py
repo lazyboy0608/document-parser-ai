@@ -270,7 +270,9 @@ def extract_text_from_pdf(
         page_images.append(img_path)
 
         alphanumeric_count = sum(1 for c in text if c.isalnum())
-        ratio = alphanumeric_count / max(1, len(text))
+        # Loại bỏ các ký tự dấu chấm dẫn dòng (TOC leader dots), gạch nối, dấu chấm lửng và khoảng trắng trước khi tính mẫu số
+        meaningful_text = re.sub(r"[\s\.\-_·…]+", "", text)
+        ratio = alphanumeric_count / max(1, len(meaningful_text))
         junk_count = sum(1 for c in text if c in "~<>\\|`^_{}[]*\ufffd:")
 
         # Một trang được coi là có text số sạch khi có đủ ký tự, tỷ lệ chữ cái tự nhiên cao và ít ký tự rác

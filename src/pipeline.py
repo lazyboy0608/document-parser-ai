@@ -36,6 +36,7 @@ class DocumentPipeline:
         self.exact_dedup = ExactDeduplicator()
         # Nạp danh sách mã băm SHA-256 từ các tệp THỰC SỰ ĐANG TỒN TẠI trên đĩa để nhận diện trùng lặp
         self.exact_dedup.seen_hashes.update(self.state_tracker.get_active_hashes())
+        self.exact_dedup.hash_to_path.update(self.state_tracker.get_active_exact_hashes())
         # Nạp bộ lọc trùng lặp nội dung mờ bền vững SimHash 64-bit và kho mã băm lịch sử từ SQLite
         self.simhash_dedup = SimHashDeduplicator(threshold_bits=settings.SIMHASH_THRESHOLD_BITS)
         self.active_simhashes: Dict[str, str] = self.state_tracker.get_active_simhashes()
@@ -68,9 +69,12 @@ class DocumentPipeline:
                     logger.info(f"-> Đã xử lý trong phiên trước (Load từ cache): {file_path.name}")
                     target_path = self.file_organizer.organize(
                         source_file=file_path,
+                        document_type=meta_cached.get("document_type"),
                         language=meta_cached.get("language"),
                         contract_name=meta_cached.get("contract_name"),
+                        well_link=meta_cached.get("well_link"),
                         originator=meta_cached.get("originator"),
+                        is_duplicate=cached_item.get("is_duplicate", False),
                         mode=self.mode,
                         date_str=date_str,
                     )
@@ -86,6 +90,7 @@ class DocumentPipeline:
                             cached_item.get("file_hash", ""),
                             "COMPLETED",
                             is_duplicate=cached_item.get("is_duplicate", False),
+                            duplicate_of=cached_item.get("duplicate_of"),
                             metadata=meta_cached
                         )
                     return item_res
@@ -109,7 +114,9 @@ class DocumentPipeline:
                         document_type=getattr(meta_obj, "document_type", None),
                         language=meta_obj.language,
                         contract_name=meta_obj.contract_name,
+                        well_link=getattr(meta_obj, "well_link", None),
                         originator=meta_obj.originator,
+                        is_duplicate=cached_item.get("is_duplicate", False),
                         mode=self.mode,
                         date_str=date_str,
                     )
@@ -125,6 +132,7 @@ class DocumentPipeline:
                         file_hash,
                         "COMPLETED",
                         is_duplicate=cached_item.get("is_duplicate", False),
+                        duplicate_of=cached_item.get("duplicate_of"),
                         metadata=updated_dict,
                     )
                     cached_item["metadata"] = updated_dict
@@ -142,8 +150,12 @@ class DocumentPipeline:
 
         # 2. Lọc trùng lặp tuyệt đối (Tầng 1 - Exact Hash)
         file_hash = self.exact_dedup.calculate_file_hash(file_path)
-        if self.exact_dedup.is_duplicate_file(file_path):
-            logger.warning(f"-> Phát hiện trùng lặp tuyệt đối (100% giống file khác): {file_path.name}")
+        is_exact_dup, matched_exact = self.exact_dedup.find_duplicate(file_path)
+        if is_exact_dup:
+            orig_name = Path(matched_exact).name if matched_exact else None
+            logger.warning(
+                f"-> Phát hiện trùng lặp tuyệt đối (100% giống {orig_name or 'file khác'}): {file_path.name}"
+            )
             dup_meta = {
                 "title": "Tài liệu trùng lặp",
                 "contract_name": "N/A",
@@ -156,10 +168,12 @@ class DocumentPipeline:
                 "encl": "No",
                 "encl_name": "None",
                 "confidence_score": 0.0,
+                "duplicate_type": "exact",
+                "duplicate_of": orig_name,
             }
             target_path = self.file_organizer.organize(
                 source_file=file_path,
-                language="Duplicates",
+                is_duplicate=True,
                 mode=self.mode,
                 date_str=date_str,
             )
@@ -170,11 +184,19 @@ class DocumentPipeline:
             final_path = target_path if self.mode == "move" else file_path
             if self.mode == "move" and target_path != file_path:
                 self.state_tracker.delete_state(str(file_path))
-            self.state_tracker.save_state(str(final_path), file_hash, "COMPLETED", is_duplicate=True, metadata=dup_meta)
+            self.state_tracker.save_state(
+                str(final_path),
+                file_hash,
+                "COMPLETED",
+                is_duplicate=True,
+                duplicate_of=orig_name,
+                metadata=dup_meta
+            )
             return {
                 "file_name": target_path.name,
                 "file_path": str(final_path),
                 "is_duplicate": True,
+                "duplicate_of": orig_name,
                 "metadata": dup_meta,
                 "date_str": date_str,
             }
@@ -195,11 +217,12 @@ class DocumentPipeline:
         )
         sim_pct = self.simhash_dedup.similarity_percentage(simhash_dist)
 
+        semantic_orig_name = None
         if is_semantic_dup and matched_orig:
-            orig_name = Path(matched_orig).name
+            semantic_orig_name = Path(matched_orig).name
             logger.warning(
                 f"-> [SIMHASH] Gần trùng lặp nội dung ({sim_pct}% tương đồng, lệch {simhash_dist}/64 bits) "
-                f"với tài liệu gốc: {orig_name}"
+                f"với tài liệu gốc: {semantic_orig_name}"
             )
 
         # 5. Trích xuất metadata có cấu trúc (Cơ chế Lai 2 Tầng - Two-Tier Hybrid Architecture)
@@ -269,14 +292,18 @@ class DocumentPipeline:
         )
 
         meta_dict = metadata.model_dump()
+        if is_semantic_dup and semantic_orig_name:
+            meta_dict["duplicate_of"] = semantic_orig_name
 
-        # 6. Phân cụm và tổ chức file vào thư mục đích theo Ngày & Thể loại tài liệu: <output_dir>/<YYYYMMDD>/<Document_Type>/<file>
+        # 6. Phân cụm và tổ chức file vào thư mục đích theo Ngày & Dự án / Trùng lặp
         target_path = self.file_organizer.organize(
             source_file=file_path,
             document_type=metadata.document_type,
             language=metadata.language,
             contract_name=metadata.contract_name,
+            well_link=metadata.well_link,
             originator=metadata.originator,
+            is_duplicate=is_semantic_dup,
             mode=self.mode,
             date_str=date_str,
         )
@@ -292,21 +319,35 @@ class DocumentPipeline:
         if self.mode == "move" and target_path != file_path:
             self.state_tracker.delete_state(str(file_path))
             self.state_tracker.save_state(
-                str(target_path), file_hash, "COMPLETED", is_duplicate=is_semantic_dup, metadata=meta_dict, simhash=simhash_hex
+                str(target_path),
+                file_hash,
+                "COMPLETED",
+                is_duplicate=is_semantic_dup,
+                duplicate_of=semantic_orig_name,
+                metadata=meta_dict,
+                simhash=simhash_hex
             )
         else:
             self.state_tracker.save_state(
-                str(final_path), file_hash, "COMPLETED", is_duplicate=is_semantic_dup, metadata=meta_dict, simhash=simhash_hex
+                str(final_path),
+                file_hash,
+                "COMPLETED",
+                is_duplicate=is_semantic_dup,
+                duplicate_of=semantic_orig_name,
+                metadata=meta_dict,
+                simhash=simhash_hex
             )
 
-        # Cập nhật mã SimHash vào danh sách nhớ của phiên làm việc (nếu là tài liệu gốc)
+        # Cập nhật mã SimHash và exact hash vào danh sách nhớ của phiên làm việc (nếu là tài liệu gốc)
         if not is_semantic_dup:
             self.active_simhashes[str(final_path)] = simhash_hex
+            self.exact_dedup.register_file(final_path, file_hash)
 
         return {
             "file_name": target_path.name,
             "file_path": str(final_path),
             "is_duplicate": is_semantic_dup,
+            "duplicate_of": semantic_orig_name,
             "metadata": meta_dict,
             "date_str": date_str,
         }

@@ -170,7 +170,7 @@ class ExcelExporter:
             "Encl Name": 48,
             "Độ tin cậy": 14,
             "Đường dẫn tệp gốc": 32,
-            "Trạng thái trùng lặp": 28,
+            "Trạng thái trùng lặp": 40,
         }
         for col_name, width in col_widths.items():
             if col_name in col_name_to_idx:
@@ -193,14 +193,15 @@ class ExcelExporter:
                 conf_val = float(meta.get("confidence_score", 0.0) or 0.0)
                 conf_display = f"{conf_val:.1f}%" if conf_val > 0 else "N/A"
 
-                # Xác định rõ nguyên nhân trùng lặp: SHA-256 hay SimHash nội dung mờ
+                # Xác định rõ trạng thái trùng lặp và tên tệp gốc đối chiếu (loại bỏ thuật ngữ SimHash/SHA-256)
                 dup_status = meta.get("duplicate_status")
                 if not dup_status:
                     if item.get("is_duplicate"):
-                        if meta.get("title") == "Tài liệu trùng lặp":
-                            dup_status = "Trùng lặp 100% (SHA-256)"
+                        dup_of = item.get("duplicate_of") or meta.get("duplicate_of")
+                        if meta.get("title") == "Tài liệu trùng lặp" or meta.get("duplicate_type") == "exact":
+                            dup_status = f"Trùng khớp 100% (với {dup_of})" if dup_of else "Trùng khớp 100%"
                         else:
-                            dup_status = "Gần trùng lặp (SimHash >95%)"
+                            dup_status = f"Gần trùng lặp (với {dup_of})" if dup_of else "Gần trùng lặp"
                     else:
                         dup_status = "Gốc (Không trùng)"
 

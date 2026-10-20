@@ -26,12 +26,54 @@ def sanitize_folder_name(name: str, max_length: int = 50) -> str:
     return sanitized[:max_length]
 
 
+def resolve_cluster_folder_name(
+    is_duplicate: bool = False,
+    contract_name: Optional[str] = None,
+    well_link: Optional[str] = None,
+    originator: Optional[str] = None,
+    document_type: Optional[str] = None,
+) -> str:
+    """
+    Xác định tên thư mục gom cụm theo thứ tự ưu tiên:
+    1. Trùng lặp -> 'Trùng lặp'
+    2. Hợp đồng / Lô mỏ / Dự án (contract_name)
+    3. Giếng khoan (well_link) -> 'Well_<well_link>'
+    4. Đơn vị ban hành lớn (originator)
+    5. Thể loại tài liệu hoặc 'Tai_lieu_chung' (Fallback)
+    """
+    # 1. Ưu tiên cao nhất: Tệp trùng lặp (SHA-256 hoặc SimHash)
+    if is_duplicate:
+        return "Trùng lặp"
+
+    # 2. Ưu tiên Lô / Mỏ / Dự án / Hợp đồng
+    c_clean = str(contract_name or "").strip()
+    if c_clean and c_clean.lower() not in {"n/a", "none", "chưa rõ", "unknown", "nan", "null", ""}:
+        return sanitize_folder_name(c_clean)
+
+    # 3. Ưu tiên Giếng khoan
+    w_clean = str(well_link or "").strip()
+    if w_clean and w_clean.lower() not in {"n/a", "none", "chưa rõ", "unknown", "nan", "null", ""}:
+        prefix = "" if any(w_clean.upper().startswith(k) for k in ["WELL", "LK", "SKV", "BLOCK"]) else "Well_"
+        return sanitize_folder_name(f"{prefix}{w_clean}")
+
+    # 4. Ưu tiên Đơn vị ban hành lớn
+    o_clean = str(originator or "").strip()
+    if o_clean and o_clean.lower() not in {"n/a", "none", "chưa rõ", "unknown", "nan", "null", ""}:
+        return sanitize_folder_name(o_clean)
+
+    # 5. Fallback về Thể loại tài liệu hoặc Thư mục chung
+    if document_type and document_type.strip() and document_type.strip().lower() not in {"general_report", "chưa rõ", "unknown", "none"}:
+        return sanitize_folder_name(document_type.strip())
+
+    return "Tai_lieu_chung"
+
+
 class FileOrganizer:
     """
-    Gom cụm và sắp xếp các tệp tài liệu vào các thư mục theo Ngày và Thể loại tài liệu (Document Type):
-    Cấu trúc: <base_output_dir>/<YYYYMMDD>/<Document_Type>/<ten_file> 
-    (Ví dụ: D:\\outputNLP\\20261002\\Well_Proposal\\Report-sample.pdf)
-    Thư mục ngày và thể loại chỉ được tạo khi có tài liệu thực sự cần phân loại.
+    Gom cụm và sắp xếp các tệp tài liệu vào các thư mục theo Ngày và Dự án / Lô mỏ / Hợp đồng:
+    Cấu trúc: <base_output_dir>/<YYYYMMDD>/<Cluster_Folder>/<ten_file> 
+    (Ví dụ: D:\\outputNLP\\20261020\\BLOCKS_15-1_&_15-2\\Report-sample.pdf hoặc D:\\outputNLP\\20261020\\Trùng lặp\\...)
+    Thư mục ngày và phân cụm chỉ được tạo khi có tài liệu thực sự cần phân loại.
     """
     def __init__(self, base_output_dir: Path):
         self.base_output_dir = Path(base_output_dir).resolve()
@@ -43,12 +85,14 @@ class FileOrganizer:
         document_type: Optional[str] = None,
         language: Optional[str] = None,
         contract_name: Optional[str] = None,
+        well_link: Optional[str] = None,
         originator: Optional[str] = None,
+        is_duplicate: bool = False,
         mode: str = "move",  # "move" hoặc "copy"
         date_str: Optional[str] = None,
     ) -> Optional[Path]:
         """
-        Di chuyển hoặc sao chép tệp vào thư mục theo Ngày (<YYYYMMDD>) và Thể loại tài liệu chuẩn hóa.
+        Di chuyển hoặc sao chép tệp vào thư mục theo Ngày (<YYYYMMDD>) và Phân cụm Dự án / Trùng lặp.
         Sử dụng cơ chế Giao dịch 2 pha (Two-Phase Safe Transfer):
         1. Ghi ra tệp tạm '.nlp_tmp' trên thư mục đích để đảm bảo dữ liệu toàn vẹn qua mạng LAN.
         2. So khớp dung lượng tệp; nếu khớp 100%, thực hiện đổi tên nguyên tử (atomic replace).
@@ -63,10 +107,16 @@ class FileOrganizer:
             from datetime import datetime
             date_str = datetime.now().strftime("%Y%m%d")
 
-        safe_doc_type = sanitize_folder_name(document_type or "General_Report")
+        cluster_name = resolve_cluster_folder_name(
+            is_duplicate=is_duplicate,
+            contract_name=contract_name,
+            well_link=well_link,
+            originator=originator,
+            document_type=document_type,
+        )
 
-        # Cấu trúc: <base_output_dir>/<YYYYMMDD>/<Document_Type>/<ten_file>
-        target_dir = self.base_output_dir / date_str / safe_doc_type
+        # Cấu trúc: <base_output_dir>/<YYYYMMDD>/<Cluster_Folder>/<ten_file>
+        target_dir = self.base_output_dir / date_str / cluster_name
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:

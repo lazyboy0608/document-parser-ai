@@ -34,8 +34,11 @@ class StateTracker:
             columns = [col[1] for col in cursor.fetchall()]
             if "simhash" not in columns:
                 cursor.execute("ALTER TABLE processed_files ADD COLUMN simhash TEXT;")
+            if "duplicate_of" not in columns:
+                cursor.execute("ALTER TABLE processed_files ADD COLUMN duplicate_of TEXT;")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_simhash ON processed_files(simhash);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_hash ON processed_files(file_hash);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_duplicate_of ON processed_files(duplicate_of);")
 
             # Đồng bộ các bản ghi đường dẫn tương đối cũ sang đường dẫn tuyệt đối chuẩn
             cursor.execute("SELECT file_path, file_hash, simhash, status, is_duplicate, metadata_json FROM processed_files")
@@ -78,6 +81,7 @@ class StateTracker:
         file_hash: str,
         status: str,
         is_duplicate: bool = False,
+        duplicate_of: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         simhash: Optional[str] = None
     ):
@@ -95,15 +99,29 @@ class StateTracker:
                 if row and row[0]:
                     simhash = row[0]
 
+            # Nếu duplicate_of không truyền vào, kiểm tra trong metadata hoặc giữ lại giá trị cũ
+            if duplicate_of is None:
+                if metadata and metadata.get("duplicate_of"):
+                    duplicate_of = str(metadata["duplicate_of"])
+                else:
+                    cursor.execute("SELECT duplicate_of FROM processed_files WHERE file_path = ?", (norm_p,))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        duplicate_of = row[0]
+
+            if metadata is not None and duplicate_of:
+                metadata["duplicate_of"] = duplicate_of
+
             cursor.execute("""
-                INSERT OR REPLACE INTO processed_files (file_path, file_hash, simhash, status, is_duplicate, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO processed_files (file_path, file_hash, simhash, status, is_duplicate, duplicate_of, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 norm_p,
                 file_hash,
                 simhash,
                 status,
                 1 if is_duplicate else 0,
+                duplicate_of,
                 json.dumps(metadata, ensure_ascii=False) if metadata else None
             ))
             conn.commit()
@@ -164,12 +182,14 @@ class StateTracker:
     def get_all_completed(self) -> Dict[str, Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT file_path, is_duplicate, metadata_json FROM processed_files WHERE status = 'COMPLETED'")
+            cursor.execute("SELECT file_path, is_duplicate, duplicate_of, metadata_json FROM processed_files WHERE status = 'COMPLETED'")
             rows = cursor.fetchall()
             results = {}
-            for path_str, is_dup, meta_json in rows:
+            for path_str, is_dup, dup_of, meta_json in rows:
                 norm_p = self._norm(path_str)
                 meta = json.loads(meta_json) if meta_json else {}
+                if dup_of and "duplicate_of" not in meta:
+                    meta["duplicate_of"] = dup_of
                 # Ưu tiên giữ bản ghi không phải "Tài liệu trùng lặp" nếu có cả bản ghi cũ và mới
                 if norm_p in results and meta.get("title") == "Tài liệu trùng lặp":
                     continue
@@ -177,9 +197,21 @@ class StateTracker:
                     "file_name": Path(norm_p).name,
                     "file_path": norm_p,
                     "is_duplicate": bool(is_dup),
+                    "duplicate_of": dup_of or meta.get("duplicate_of"),
                     "metadata": meta
                 }
             return results
+
+    def get_active_exact_hashes(self) -> Dict[str, str]:
+        """
+        Lấy ánh xạ {file_hash: file_path} của các tệp đã xử lý thành công (không trùng lặp).
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT file_hash, file_path FROM processed_files WHERE status = 'COMPLETED' AND is_duplicate = 0 AND file_hash IS NOT NULL AND file_hash != ''"
+            )
+            return {fhash: fp for fhash, fp in cursor.fetchall()}
 
     def get_active_hashes(self) -> set[str]:
         """

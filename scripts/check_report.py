@@ -5,8 +5,9 @@ import pandas as pd
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-print("=== EXCEL REPORT DATA ===")
-df = pd.read_excel("data/reports/tong_hop_tai_lieu.xlsx")
+report_path = sys.argv[1] if len(sys.argv) > 1 else "data/reports/tong_hop_tai_lieu.xlsx"
+print(f"=== EXCEL REPORT DATA ({report_path}) ===")
+df = pd.read_excel(report_path)
 for idx, col in enumerate(df.columns):
     print(f"Col {idx}: {col}")
 

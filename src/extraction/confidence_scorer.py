@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 from typing import Dict, Any, List, Optional, Tuple
 
 from .schemas import DocumentMetadata
-from .domain_cleaner import OIL_GAS_CORRECTIONS
+from .domain_cleaner import OIL_GAS_CORRECTIONS, is_missing_or_unknown_phrase
 
 
 # Trọng số đóng góp của từng trường vào Độ tin cậy tổng thể của tài liệu (Tổng = 1.0)
@@ -197,7 +197,7 @@ def evaluate_metadata_confidence(
 
     for field, weight in FIELD_WEIGHTS.items():
         val = str(data.get(field, "") or "").strip()
-        is_missing = val in {"", "Chưa rõ", "Unknown", "Lỗi trích xuất LLM"}
+        is_missing = val in {"", "Chưa rõ", "Unknown", "Lỗi trích xuất LLM"} or is_missing_or_unknown_phrase(val)
         is_na = val in {"N/A", "None", "No"}
 
         # 1. Nếu trường bắt buộc bị khuyết ("Unknown" / "Chưa rõ" / "N/A")
