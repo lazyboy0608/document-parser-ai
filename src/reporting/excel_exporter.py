@@ -153,6 +153,26 @@ class ExcelExporter:
                     conf_comment.height = 80
                     conf_cell.comment = conf_comment
 
+            # Ghi chú trực quan đối chiếu nhanh sai khác cho tệp trùng lặp
+            if item.get("is_duplicate"):
+                dup_col_idx = col_name_to_idx.get("Trạng thái trùng lặp")
+                if dup_col_idx:
+                    dup_cell = ws.cell(row=row_offset, column=dup_col_idx)
+                    diff_info = meta.get("diff_info") or {}
+                    summary_txt = diff_info.get("summary")
+                    sim_pct = diff_info.get("similarity_pct", 95.0)
+                    if summary_txt:
+                        comment_txt = (
+                            f"🔍 ĐỐI CHIẾU SAI KHÁC NHANH (AI Diff):\n"
+                            f"• Độ tương đồng: {sim_pct:.1f}%\n"
+                            f"• Điểm khác biệt: {summary_txt}\n"
+                            f"• Chi tiết: Xem Tab 'Đối chiếu Trùng lặp'."
+                        )
+                        diff_comment = Comment(comment_txt, "AI Semantic Diff Auditor")
+                        diff_comment.width = 330
+                        diff_comment.height = 95
+                        dup_cell.comment = diff_comment
+
         # Căn chỉnh độ rộng cột dễ nhìn
         col_widths = {
             "STT": 6,
@@ -176,6 +196,93 @@ class ExcelExporter:
             if col_name in col_name_to_idx:
                 col_letter = get_column_letter(col_name_to_idx[col_name])
                 ws.column_dimensions[col_letter].width = width
+
+    @classmethod
+    def _export_diff_sheet(cls, writer: pd.ExcelWriter, data: List[Dict[str, Any]]):
+        """Tự động sinh Sheet 2 'Đối chiếu Trùng lặp' gom toàn bộ các tệp trùng lặp trong ngày."""
+        dup_items = [item for item in data if item.get("is_duplicate")]
+        if not dup_items:
+            return
+
+        diff_rows = []
+        for idx, item in enumerate(dup_items, 1):
+            meta = item.get("metadata", {}) or {}
+            diff_info = meta.get("diff_info", {}) or {}
+            orig_name = item.get("duplicate_of") or meta.get("duplicate_of") or "Chưa rõ"
+            sim_pct_val = diff_info.get("similarity_pct")
+            if sim_pct_val is not None:
+                sim_str = f"{float(sim_pct_val):.1f}%"
+            elif meta.get("duplicate_type") == "exact" or meta.get("title") == "Tài liệu trùng lặp":
+                sim_str = "100.0%"
+            else:
+                sim_str = "≥95.0%"
+
+            summary_text = diff_info.get("summary") or (
+                "Trùng khớp tuyệt đối 100% nội dung (cùng mã băm SHA-256)"
+                if sim_str == "100.0%"
+                else f"Gần trùng lặp nội dung với tệp '{orig_name}'"
+            )
+
+            added_snippets = "\n• ".join(diff_info.get("added_snippets", []))
+            if added_snippets:
+                added_snippets = "• " + added_snippets
+
+            deleted_snippets = "\n• ".join(diff_info.get("deleted_snippets", []))
+            if deleted_snippets:
+                deleted_snippets = "• " + deleted_snippets
+
+            diff_rows.append({
+                "STT": idx,
+                "Tên tệp trùng lặp": item.get("file_name", ""),
+                "Tệp gốc đối chiếu": orig_name,
+                "Độ tương đồng": sim_str,
+                "Tóm tắt sai khác (AI Diff Summary)": summary_text,
+                "Trích đoạn Thêm mới (+)": added_snippets or "(Không có)",
+                "Trích đoạn Bị cắt bỏ (-)": deleted_snippets or "(Không có)",
+            })
+
+        df_diff = pd.DataFrame(diff_rows)
+        df_diff.to_excel(writer, index=False, sheet_name="Đối chiếu Trùng lặp")
+        ws_diff = writer.sheets["Đối chiếu Trùng lặp"]
+
+        # Định dạng Header Sheet 2
+        header_fill = PatternFill(start_color="104C82", end_color="104C82", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+        thin_side = Side(border_style="thin", color="D9D9D9")
+        normal_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+        for col_idx in range(1, len(df_diff.columns) + 1):
+            cell = ws_diff.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = normal_border
+        ws_diff.row_dimensions[1].height = 26
+
+        # Định dạng Data Rows Sheet 2
+        for row_idx in range(2, len(diff_rows) + 2):
+            ws_diff.row_dimensions[row_idx].height = 36
+            for col_idx in range(1, len(df_diff.columns) + 1):
+                c = ws_diff.cell(row=row_idx, column=col_idx)
+                c.font = Font(name="Arial", size=9.5)
+                c.border = normal_border
+                c.alignment = Alignment(vertical="top", wrap_text=True)
+                if col_idx in {1, 4}:  # STT và Độ tương đồng
+                    c.alignment = Alignment(horizontal="center", vertical="center")
+
+        diff_widths = {
+            "STT": 6,
+            "Tên tệp trùng lặp": 28,
+            "Tệp gốc đối chiếu": 28,
+            "Độ tương đồng": 16,
+            "Tóm tắt sai khác (AI Diff Summary)": 45,
+            "Trích đoạn Thêm mới (+)": 35,
+            "Trích đoạn Bị cắt bỏ (-)": 35,
+        }
+        for col_name, width in diff_widths.items():
+            if col_name in df_diff.columns:
+                col_letter = get_column_letter(df_diff.columns.get_loc(col_name) + 1)
+                ws_diff.column_dimensions[col_letter].width = width
 
     @classmethod
     def export(cls, data: List[Dict[str, Any]], output_path: Path) -> Path:
@@ -236,6 +343,8 @@ class ExcelExporter:
                 df.to_excel(writer, index=False, sheet_name="Báo cáo Dầu khí")
                 ws = writer.sheets["Báo cáo Dầu khí"]
                 cls._apply_formatting_and_highlights(ws, data)
+                # Tự động xuất Sheet 2 "Đối chiếu Trùng lặp" nếu có tệp trùng lặp
+                cls._export_diff_sheet(writer, data)
         except Exception as write_err:
             logger.error(f"Lỗi khi khởi tạo báo cáo Excel tạm cục bộ: {write_err}")
             if temp_export_file.exists():

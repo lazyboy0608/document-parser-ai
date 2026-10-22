@@ -56,7 +56,23 @@ def main():
         default=settings.WATCH_STABLE_SECONDS,
         help="Số giây kiểm tra kích thước tệp ổn định và nhả khóa trước khi đọc (chống lỗi ghi file chưa xong)"
     )
+    parser.add_argument(
+        "--sync-excel",
+        type=Path,
+        default=None,
+        help="Đồng bộ ngược dữ liệu do con người chỉnh sửa từ tệp Excel vào CSDL SQLite (Human-in-the-Loop)"
+    )
     args = parser.parse_args()
+
+    # Xử lý lệnh đồng bộ ngược từ Excel nếu người dùng chỉ định
+    if args.sync_excel:
+        from src.reporting.sync_engine import ExcelSyncEngine
+        cand_output = Path("D:/outputNLP")
+        out_d = args.output_dir if args.output_dir else (cand_output if cand_output.exists() else settings.OUTPUT_DIR)
+        sync_engine = ExcelSyncEngine(output_dir=out_d)
+        res = sync_engine.sync_from_excel(args.sync_excel)
+        logger.info(f"Hoàn thành đồng bộ: {res['updated_files_count']} tệp được cập nhật.")
+        return
 
     # Tự động nhận diện thư mục đầu ra D:\outputNLP nếu có sẵn hoặc theo chỉ định
     if args.output_dir is None:

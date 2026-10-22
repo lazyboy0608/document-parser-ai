@@ -41,6 +41,7 @@ def extract_text_from_docx(
     file_path: Path,
     max_head_chars: int = 12000,
     tail_blocks_count: int = 2,
+    full_text: bool = False,
 ) -> str:
     """
     Trích xuất văn bản từ tệp Word .docx theo cơ chế Smart Content-Aware Sampling:
@@ -56,6 +57,9 @@ def extract_text_from_docx(
 
     if not all_blocks:
         return ""
+
+    if full_text:
+        return "\n\n".join(text for _, text in all_blocks).strip()
 
     body_stop_regex = re.compile(
         r"^\s*(CHƯƠNG\s+[0-9IVX]+|PHẦN\s+[0-9IVX]+|1\.\s+TỔNG\s+QUAN|1\.\s+ĐẶT\s+VẤN\s+ĐỀ|CHAPTER\s+[0-9IVX]+|SECTION\s+[0-9IVX]+|1\.\s+INTRODUCTION)\b",

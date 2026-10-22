@@ -14,7 +14,7 @@ class DocumentLoader:
     SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".png", ".jpg", ".jpeg", ".tiff", ".bmp"}
 
     @classmethod
-    def load_document(cls, file_path: Path) -> Dict[str, Any]:
+    def load_document(cls, file_path: Path, full_text: bool = False) -> Dict[str, Any]:
         ext = file_path.suffix.lower()
         if ext not in cls.SUPPORTED_EXTENSIONS:
             raise ValueError(f"Định dạng tệp không được hỗ trợ: {ext}")
@@ -25,17 +25,46 @@ class DocumentLoader:
         ocr_lines = []
 
         if ext == ".pdf":
-            from config.settings import settings
-            text, is_scanned, page_images, ocr_lines = extract_text_from_pdf(
-                file_path,
-                head_pages=settings.HEAD_PAGES,
-                tail_pages=settings.TAIL_PAGES,
-                backward_scan_pages=settings.BACKWARD_SCAN_MAX_PAGES,
-                ocr_lang=settings.OCR_LANG,
-                return_ocr_lines=True,
-            )
+            if full_text:
+                import pymupdf
+                try:
+                    pdf_doc = pymupdf.open(file_path)
+                    pages_text = [p.get_text("text").strip() for p in pdf_doc]
+                    raw_full = "\n\n".join(t for t in pages_text if t)
+                    if len(raw_full.strip()) >= 100:
+                        text = raw_full
+                    else:
+                        from config.settings import settings
+                        text, is_scanned, page_images, ocr_lines = extract_text_from_pdf(
+                            file_path,
+                            head_pages=settings.HEAD_PAGES,
+                            tail_pages=settings.TAIL_PAGES,
+                            backward_scan_pages=settings.BACKWARD_SCAN_MAX_PAGES,
+                            ocr_lang=settings.OCR_LANG,
+                            return_ocr_lines=True,
+                        )
+                except Exception:
+                    from config.settings import settings
+                    text, is_scanned, page_images, ocr_lines = extract_text_from_pdf(
+                        file_path,
+                        head_pages=settings.HEAD_PAGES,
+                        tail_pages=settings.TAIL_PAGES,
+                        backward_scan_pages=settings.BACKWARD_SCAN_MAX_PAGES,
+                        ocr_lang=settings.OCR_LANG,
+                        return_ocr_lines=True,
+                    )
+            else:
+                from config.settings import settings
+                text, is_scanned, page_images, ocr_lines = extract_text_from_pdf(
+                    file_path,
+                    head_pages=settings.HEAD_PAGES,
+                    tail_pages=settings.TAIL_PAGES,
+                    backward_scan_pages=settings.BACKWARD_SCAN_MAX_PAGES,
+                    ocr_lang=settings.OCR_LANG,
+                    return_ocr_lines=True,
+                )
         elif ext == ".docx":
-            text = extract_text_from_docx(file_path)
+            text = extract_text_from_docx(file_path, full_text=full_text)
         elif ext == ".doc":
             text = extract_text_from_doc(file_path)
         elif ext == ".txt":

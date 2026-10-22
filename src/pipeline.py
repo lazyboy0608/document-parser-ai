@@ -11,8 +11,8 @@ from src.extraction.llm_extractor import LLMExtractor
 from src.extraction.vlm_extractor import VLMExtractor
 from src.extraction.domain_cleaner import clean_metadata_fields
 from src.clustering.file_organizer import FileOrganizer
-# from src.clustering.topic_clustering import TopicClusterer
 from src.reporting.excel_exporter import ExcelExporter
+from src.deduplication.diff_analyzer import DocumentDiffAnalyzer
 
 
 class DocumentPipeline:
@@ -43,6 +43,7 @@ class DocumentPipeline:
         self.llm_extractor = LLMExtractor()
         self.vlm_extractor = VLMExtractor()
         self.file_organizer = FileOrganizer(self.output_dir)
+        self.diff_analyzer = DocumentDiffAnalyzer(llm_extractor=self.llm_extractor)
 
     def process_single_file(self, file_path: Path, date_str: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -218,12 +219,32 @@ class DocumentPipeline:
         sim_pct = self.simhash_dedup.similarity_percentage(simhash_dist)
 
         semantic_orig_name = None
+        diff_info = None
         if is_semantic_dup and matched_orig:
             semantic_orig_name = Path(matched_orig).name
             logger.warning(
                 f"-> [SIMHASH] Gần trùng lặp nội dung ({sim_pct}% tương đồng, lệch {simhash_dist}/64 bits) "
                 f"với tài liệu gốc: {semantic_orig_name}"
             )
+            try:
+                orig_file_path = Path(matched_orig)
+                orig_raw_text = ""
+                if orig_file_path.exists():
+                    orig_data = DocumentLoader.load_document(orig_file_path, full_text=True)
+                    orig_raw_text = orig_data.get("text", "")
+
+                dup_data = DocumentLoader.load_document(file_path, full_text=True)
+                dup_raw_text = dup_data.get("text", "") or raw_text
+
+                diff_info = self.diff_analyzer.analyze_diff(
+                    orig_text=orig_raw_text,
+                    dup_text=dup_raw_text,
+                    orig_name=orig_file_path.name,
+                    dup_name=file_path.name,
+                    sim_pct=sim_pct,
+                )
+            except Exception as diff_err:
+                logger.warning(f"Lỗi khi đối chiếu sai khác tệp trùng lặp: {diff_err}")
 
         # 5. Trích xuất metadata có cấu trúc (Cơ chế Lai 2 Tầng - Two-Tier Hybrid Architecture)
         metadata = None
@@ -294,6 +315,8 @@ class DocumentPipeline:
         meta_dict = metadata.model_dump()
         if is_semantic_dup and semantic_orig_name:
             meta_dict["duplicate_of"] = semantic_orig_name
+            if diff_info:
+                meta_dict["diff_info"] = diff_info
 
         # 6. Phân cụm và tổ chức file vào thư mục đích theo Ngày & Dự án / Trùng lặp
         target_path = self.file_organizer.organize(
