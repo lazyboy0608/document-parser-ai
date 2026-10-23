@@ -133,6 +133,7 @@ class TestDocumentDiff(unittest.TestCase):
         headers = [ws2.cell(row=1, column=c).value for c in range(1, ws2.max_column + 1)]
         expected_headers = [
             "STT",
+            "Mã nhóm (Group ID)",
             "Tên tệp trùng lặp",
             "Tệp gốc đối chiếu",
             "Độ tương đồng",
@@ -142,10 +143,10 @@ class TestDocumentDiff(unittest.TestCase):
         ]
         self.assertEqual(headers, expected_headers)
 
-        self.assertEqual(ws2.cell(row=2, column=2).value, "Báo cáo chính thức-draft.docx")
-        self.assertEqual(ws2.cell(row=2, column=3).value, "Báo cáo chính thức.pdf")
-        self.assertEqual(ws2.cell(row=2, column=4).value, "97.2%")
-        self.assertIn("áp suất đáy giếng", ws2.cell(row=2, column=5).value)
+        self.assertEqual(ws2.cell(row=2, column=3).value, "Báo cáo chính thức-draft.docx")
+        self.assertEqual(ws2.cell(row=2, column=4).value, "Báo cáo chính thức.pdf")
+        self.assertEqual(ws2.cell(row=2, column=5).value, "97.2%")
+        self.assertIn("áp suất đáy giếng", ws2.cell(row=2, column=6).value)
 
         wb.close()
 

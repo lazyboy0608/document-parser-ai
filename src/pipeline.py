@@ -5,45 +5,43 @@ from config.settings import settings
 from src.utils.logger import logger
 from src.utils.state_tracker import StateTracker
 from src.ingestion.document_loader import DocumentLoader
-from src.deduplication.exact_dedup import ExactDeduplicator
-from src.deduplication.simhash_dedup import SimHashDeduplicator
-from src.extraction.llm_extractor import LLMExtractor
-from src.extraction.vlm_extractor import VLMExtractor
-from src.extraction.domain_cleaner import clean_metadata_fields
+from src.deduplication.pipeline_dedup import DeduplicationPipeline, DedupResult
+from src.extraction.pipeline_ai import AIExtractionPipeline
 from src.clustering.file_organizer import FileOrganizer
 from src.reporting.excel_exporter import ExcelExporter
-from src.deduplication.diff_analyzer import DocumentDiffAnalyzer
 
 
 class DocumentPipeline:
     """
     Bộ điều phối toàn diện (Pipeline Orchestrator) Hybrid:
-    1. Quét tài liệu đầu vào
-    2. Checkpoint chống crash với SQLite
-    3. Lọc trùng lặp 2 tầng (Exact Hash & Semantic MinHash)
-    4. Trích xuất text thông minh (Hỗ trợ PDF số, PDF scan bằng PaddleOCR, DOCX, DOC, TXT)
-    5. Điều phối Hybrid:
-       - Tài liệu số (Word, PDF sạch) -> Fast LLM (Qwen-2.5:3b)
-       - Tài liệu scan mờ/nhòe/con dấu -> VLM (Qwen2.5-VL)
-    6. Chuẩn hóa lỗi chính tả chuyên ngành Dầu khí
-    7. Tự động phân loại và gom vào thư mục theo [CONTRACT_NAME / ORIGINATOR]
-    8. Xuất báo cáo tổng hợp ra file Excel (.xlsx)
+    - TẦNG 1: DeduplicationPipeline siêu tốc thuần CPU (~0.05s) với liên kết 2 chiều & cập nhật ngược.
+      Nếu phát hiện trùng lặp -> Short-circuit dừng ngay lập tức, không gọi AI.
+    - TẦNG 2: AIExtractionPipeline chuyên sâu chỉ tiếp nhận tệp mới tinh.
     """
     def __init__(self, output_dir: Optional[Path] = None, mode: str = "move"):
         self.output_dir = Path(output_dir or settings.OUTPUT_DIR).resolve()
         self.mode = mode
         self.state_tracker = StateTracker(settings.CACHE_DIR / "pipeline_state.db")
-        self.exact_dedup = ExactDeduplicator()
-        # Nạp danh sách mã băm SHA-256 từ các tệp THỰC SỰ ĐANG TỒN TẠI trên đĩa để nhận diện trùng lặp
-        self.exact_dedup.seen_hashes.update(self.state_tracker.get_active_hashes())
-        self.exact_dedup.hash_to_path.update(self.state_tracker.get_active_exact_hashes())
-        # Nạp bộ lọc trùng lặp nội dung mờ bền vững SimHash 64-bit và kho mã băm lịch sử từ SQLite
-        self.simhash_dedup = SimHashDeduplicator(threshold_bits=settings.SIMHASH_THRESHOLD_BITS)
-        self.active_simhashes: Dict[str, str] = self.state_tracker.get_active_simhashes()
-        self.llm_extractor = LLMExtractor()
-        self.vlm_extractor = VLMExtractor()
         self.file_organizer = FileOrganizer(self.output_dir)
-        self.diff_analyzer = DocumentDiffAnalyzer(llm_extractor=self.llm_extractor)
+
+        # Khởi tạo Tầng 1: Lọc trùng lặp CPU siêu tốc
+        self.dedup_pipeline = DeduplicationPipeline(
+            state_tracker=self.state_tracker,
+            file_organizer=self.file_organizer,
+            mode=self.mode,
+            simhash_threshold_bits=settings.SIMHASH_THRESHOLD_BITS,
+        )
+
+        # Khởi tạo Tầng 2: Trích xuất AI (LLM + VLM)
+        self.ai_pipeline = AIExtractionPipeline()
+
+        # Giữ lại các thuộc tính cũ để tương thích ngược hoàn toàn với unit tests/caller cũ
+        self.exact_dedup = self.dedup_pipeline.exact_dedup
+        self.simhash_dedup = self.dedup_pipeline.simhash_dedup
+        self.active_simhashes = self.dedup_pipeline.active_simhashes
+        self.diff_analyzer = self.dedup_pipeline.diff_analyzer
+        self.llm_extractor = self.ai_pipeline.llm_extractor
+        self.vlm_extractor = self.ai_pipeline.vlm_extractor
 
     def process_single_file(self, file_path: Path, date_str: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -151,174 +149,36 @@ class DocumentPipeline:
 
         # 2. Lọc trùng lặp tuyệt đối (Tầng 1 - Exact Hash)
         file_hash = self.exact_dedup.calculate_file_hash(file_path)
-        is_exact_dup, matched_exact = self.exact_dedup.find_duplicate(file_path)
-        if is_exact_dup:
-            orig_name = Path(matched_exact).name if matched_exact else None
-            logger.warning(
-                f"-> Phát hiện trùng lặp tuyệt đối (100% giống {orig_name or 'file khác'}): {file_path.name}"
-            )
-            dup_meta = {
-                "title": "Tài liệu trùng lặp",
-                "contract_name": "N/A",
-                "well_link": "N/A",
-                "public_date": "N/A",
-                "originator": "N/A",
-                "contractor": "N/A",
-                "author": "N/A",
-                "language": "N/A",
-                "encl": "No",
-                "encl_name": "None",
-                "confidence_score": 0.0,
-                "duplicate_type": "exact",
-                "duplicate_of": orig_name,
-            }
-            target_path = self.file_organizer.organize(
-                source_file=file_path,
-                is_duplicate=True,
-                mode=self.mode,
-                date_str=date_str,
-            )
-            if not target_path:
-                logger.error(f"Không thể di chuyển file trùng lặp {file_path.name} do lỗi truyền tải mạng LAN.")
-                return None
-
-            final_path = target_path if self.mode == "move" else file_path
-            if self.mode == "move" and target_path != file_path:
-                self.state_tracker.delete_state(str(file_path))
-            self.state_tracker.save_state(
-                str(final_path),
-                file_hash,
-                "COMPLETED",
-                is_duplicate=True,
-                duplicate_of=orig_name,
-                metadata=dup_meta
-            )
+        # 2. TẦNG 1: LỌC TRÙNG LẶP SIÊU TỐC THUẦN CPU (~0.05s) & LIÊN KẾT 2 CHIỀU
+        dedup_res: DedupResult = self.dedup_pipeline.process(file_path, date_str=date_str)
+        if dedup_res.is_duplicate:
+            # Short-circuit: Trùng lặp -> Dừng ngay lập tức, hoàn toàn không gọi AI
+            final_p = dedup_res.final_path or file_path
+            tgt_name = dedup_res.target_path.name if dedup_res.target_path else file_path.name
             return {
-                "file_name": target_path.name,
-                "file_path": str(final_path),
+                "file_name": tgt_name,
+                "file_path": str(final_p),
                 "is_duplicate": True,
-                "duplicate_of": orig_name,
-                "metadata": dup_meta,
+                "duplicate_of": dedup_res.matched_orig_name,
+                "duplicate_group_id": dedup_res.group_id,
+                "metadata": dedup_res.inherited_metadata or {},
                 "date_str": date_str,
             }
 
-        # 3. Đọc tài liệu (Hỗ trợ PDF số, PDF scan bằng PaddleOCR, DOCX, DOC, TXT)
-        try:
-            doc_data = DocumentLoader.load_document(file_path)
-            raw_text = doc_data.get("text", "")
-        except Exception as e:
-            logger.error(f"Lỗi khi nạp file {file_path.name}: {e}")
-            self.state_tracker.save_state(str(file_path), file_hash, "ERROR")
+        doc_data = dedup_res.doc_data
+        if not doc_data:
+            # Trường hợp lỗi nạp văn bản
             return None
 
-        # 4. Lọc gần trùng lặp (Tầng 2 - Persistent SimHash 64-bit)
-        simhash_hex = self.simhash_dedup.compute_simhash(raw_text)
-        is_semantic_dup, matched_orig, simhash_dist = self.simhash_dedup.find_near_duplicate(
-            simhash_hex, self.active_simhashes
-        )
-        sim_pct = self.simhash_dedup.similarity_percentage(simhash_dist)
+        file_hash = dedup_res.file_hash
+        simhash_hex = dedup_res.simhash_hex
 
-        semantic_orig_name = None
-        diff_info = None
-        if is_semantic_dup and matched_orig:
-            semantic_orig_name = Path(matched_orig).name
-            logger.warning(
-                f"-> [SIMHASH] Gần trùng lặp nội dung ({sim_pct}% tương đồng, lệch {simhash_dist}/64 bits) "
-                f"với tài liệu gốc: {semantic_orig_name}"
-            )
-            try:
-                orig_file_path = Path(matched_orig)
-                orig_raw_text = ""
-                if orig_file_path.exists():
-                    orig_data = DocumentLoader.load_document(orig_file_path, full_text=True)
-                    orig_raw_text = orig_data.get("text", "")
-
-                dup_data = DocumentLoader.load_document(file_path, full_text=True)
-                dup_raw_text = dup_data.get("text", "") or raw_text
-
-                diff_info = self.diff_analyzer.analyze_diff(
-                    orig_text=orig_raw_text,
-                    dup_text=dup_raw_text,
-                    orig_name=orig_file_path.name,
-                    dup_name=file_path.name,
-                    sim_pct=sim_pct,
-                )
-            except Exception as diff_err:
-                logger.warning(f"Lỗi khi đối chiếu sai khác tệp trùng lặp: {diff_err}")
-
-        # 5. Trích xuất metadata có cấu trúc (Cơ chế Lai 2 Tầng - Two-Tier Hybrid Architecture)
-        metadata = None
-        page_images = doc_data.get("page_images", [])
-        is_scanned = bool(doc_data.get("is_scanned", False))
-        has_digital_content = "(Digital)" in raw_text or (len(raw_text.strip()) >= 250 and not is_scanned)
-        is_pure_scan = is_scanned and "(Digital)" not in raw_text
-
-        # TẦNG 1: Đối với tài liệu số (Digital) hoặc tài liệu lai (Hybrid):
-        # Ưu tiên chạy Text LLM siêu tốc trên toàn bộ Unified Text Stream
-        if has_digital_content or not is_pure_scan:
-            try:
-                logger.info(f"-> [HYBRID TEXT - Tầng 1] Trích xuất siêu tốc qua Qwen-2.5:3b từ văn bản số: {file_path.name}")
-                metadata = self.llm_extractor.extract(raw_text)
-            except Exception as llm_err:
-                logger.warning(f"Text LLM gặp sự cố ({llm_err}), chuyển hướng sang VLM...")
-                metadata = None
-
-        # TẦNG 2: Thẩm định thị giác có mục tiêu (Targeted VLM)
-        # Kích hoạt khi:
-        # A) Tài liệu là bản scan thuần (100% scan không có text số).
-        # B) Hoặc tài liệu lai (Hybrid có bìa scan/con dấu) nhưng Tầng 1 chưa xác định rõ Đơn vị ban hành (Originator).
-        needs_vlm_verification = (
-            is_pure_scan
-            or metadata is None
-            or (is_scanned and page_images and (not metadata.originator or metadata.originator in {"N/A", "None", "Chưa rõ", "Unknown"}))
-        )
-
-        if needs_vlm_verification and page_images and settings.ENABLE_HYBRID_VLM:
-            try:
-                if is_pure_scan or metadata is None:
-                    logger.info(f"-> [HYBRID VLM - Toàn phần] Kích hoạt VLM {settings.VLM_MODEL} cho tài liệu scan: {file_path.name}")
-                    metadata = self.vlm_extractor.extract_from_images(page_images)
-                else:
-                    # Thẩm định thị giác có mục tiêu trên trang bìa/con dấu (chỉ gửi 1-2 trang đầu)
-                    logger.info(f"-> [HYBRID VLM - Tầng 2 Thẩm định] Thẩm định thị giác con dấu/bìa scan từ: {page_images[0].name}")
-                    vlm_meta = self.vlm_extractor.extract_from_images([page_images[0]])
-                    # Hợp nhất thông tin bổ sung từ con dấu/bìa vào kết quả của Tầng 1
-                    if vlm_meta.originator and vlm_meta.originator not in {"N/A", "None", "Chưa rõ"}:
-                        metadata.originator = vlm_meta.originator
-                    if (not metadata.well_link or metadata.well_link in {"N/A", "None"}) and vlm_meta.well_link and vlm_meta.well_link != "N/A":
-                        metadata.well_link = vlm_meta.well_link
-                    if (not metadata.contract_name or metadata.contract_name in {"N/A", "None"}) and vlm_meta.contract_name and vlm_meta.contract_name != "N/A":
-                        metadata.contract_name = vlm_meta.contract_name
-            except Exception as vlm_err:
-                logger.warning(f"VLM gặp sự cố ({vlm_err}), duy trì kết quả từ Text LLM.")
-
-        # Fallback an toàn cuối cùng nếu cả 2 tầng đều chưa có metadata
-        if metadata is None:
-            metadata = self.llm_extractor.extract(raw_text)
-
-        # Chuẩn hóa triệt để lỗi chính tả đặc thù scan mờ Dầu khí và nhận diện ngôn ngữ tự động
-        metadata = clean_metadata_fields(metadata, raw_text=raw_text)
-
-        # Đánh giá độ tin cậy động (Multi-Signal Confidence) và phát hiện các ô mờ/nhòe cần highlight
-        from src.extraction.confidence_scorer import evaluate_metadata_confidence
-        metadata = evaluate_metadata_confidence(
-            metadata,
-            raw_text=raw_text,
-            is_scanned=bool(doc_data.get("is_scanned", False)),
-            ocr_lines=doc_data.get("ocr_lines", []),
-        )
-        logger.info(
-            f"-> [CONFIDENCE] Độ tin cậy tài liệu: {metadata.confidence_score:.1f}% | "
-            f"Cần chú ý (Highlight): {metadata.low_confidence_fields or 'Không có'}"
-        )
-
+        # 3. TẦNG 2: AI EXTRACTION PIPELINE CHUYÊN SÂU (Chỉ chạy cho tệp MỚI TINH)
+        metadata = self.ai_pipeline.process(file_path=file_path, doc_data=doc_data)
         meta_dict = metadata.model_dump()
-        if is_semantic_dup and semantic_orig_name:
-            meta_dict["duplicate_of"] = semantic_orig_name
-            if diff_info:
-                meta_dict["diff_info"] = diff_info
+        meta_dict["duplicate_status"] = "Gốc (Không trùng)"
 
-        # 6. Phân cụm và tổ chức file vào thư mục đích theo Ngày & Dự án / Trùng lặp
+        # 4. Phân cụm và tổ chức file vào thư mục đích theo Ngày & Dự án
         target_path = self.file_organizer.organize(
             source_file=file_path,
             document_type=metadata.document_type,
@@ -326,27 +186,27 @@ class DocumentPipeline:
             contract_name=metadata.contract_name,
             well_link=metadata.well_link,
             originator=metadata.originator,
-            is_duplicate=is_semantic_dup,
+            is_duplicate=False,
             mode=self.mode,
             date_str=date_str,
         )
 
         if not target_path:
-            logger.error(f"Không thể di chuyển file {file_path.name} sang thư mục đích do lỗi mạng LAN/IO. Không ghi nhận COMPLETED.")
+            logger.error(f"Không thể di chuyển file {file_path.name} sang thư mục đích do lỗi mạng LAN/IO.")
             self.state_tracker.save_state(str(file_path), file_hash, "ERROR")
             return None
 
         final_path = target_path if self.mode == "move" else file_path
 
-        # 7. Lưu checkpoint vào SQLite (nếu move, xóa file nguồn ở dropzone và lưu vị trí mới)
+        # 5. Lưu checkpoint vào SQLite (nếu move, xóa file nguồn ở dropzone và lưu vị trí mới)
         if self.mode == "move" and target_path != file_path:
             self.state_tracker.delete_state(str(file_path))
             self.state_tracker.save_state(
                 str(target_path),
                 file_hash,
                 "COMPLETED",
-                is_duplicate=is_semantic_dup,
-                duplicate_of=semantic_orig_name,
+                is_duplicate=False,
+                duplicate_of=None,
                 metadata=meta_dict,
                 simhash=simhash_hex
             )
@@ -355,22 +215,20 @@ class DocumentPipeline:
                 str(final_path),
                 file_hash,
                 "COMPLETED",
-                is_duplicate=is_semantic_dup,
-                duplicate_of=semantic_orig_name,
+                is_duplicate=False,
+                duplicate_of=None,
                 metadata=meta_dict,
                 simhash=simhash_hex
             )
 
-        # Cập nhật mã SimHash và exact hash vào danh sách nhớ của phiên làm việc (nếu là tài liệu gốc)
-        if not is_semantic_dup:
-            self.active_simhashes[str(final_path)] = simhash_hex
-            self.exact_dedup.register_file(final_path, file_hash)
+        # 6. Đăng ký tệp mới độc nhất vào danh sách tra cứu để các tệp nạp sau đối chiếu
+        self.dedup_pipeline.register_new_unique_file(final_path, file_hash, simhash_hex)
 
         return {
             "file_name": target_path.name,
             "file_path": str(final_path),
-            "is_duplicate": is_semantic_dup,
-            "duplicate_of": semantic_orig_name,
+            "is_duplicate": False,
+            "duplicate_of": None,
             "metadata": meta_dict,
             "date_str": date_str,
         }

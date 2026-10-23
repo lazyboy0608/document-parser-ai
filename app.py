@@ -62,6 +62,11 @@ def main():
         default=None,
         help="Đồng bộ ngược dữ liệu do con người chỉnh sửa từ tệp Excel vào CSDL SQLite (Human-in-the-Loop)"
     )
+    parser.add_argument(
+        "--dedup-only",
+        action="store_true",
+        help="Chế độ chạy riêng Tầng 1: Lọc trùng lặp & liên kết 2 chiều siêu tốc thuần CPU, không gọi AI"
+    )
     args = parser.parse_args()
 
     # Xử lý lệnh đồng bộ ngược từ Excel nếu người dùng chỉ định
@@ -107,6 +112,22 @@ def main():
             mode=args.mode,
         )
         watcher.start(run_initial_scan=True)
+    elif args.dedup_only:
+        logger.info("⚡ Đang chạy chế độ lọc trùng lặp độc lập thuần CPU (--dedup-only)...")
+        pipeline = DocumentPipeline(output_dir=args.output_dir, mode=args.mode)
+        all_files = [
+            f.resolve() for f in args.input_dir.rglob("*")
+            if f.is_file() and not f.name.startswith("~$") and not f.name.startswith(".")
+        ]
+        logger.info(f"Phát hiện {len(all_files)} tài liệu. Bắt đầu sàng lọc...")
+        dup_count = 0
+        for f in all_files:
+            res = pipeline.dedup_pipeline.process(f)
+            if res.is_duplicate:
+                dup_count += 1
+                logger.info(f"  [TRÙNG LẶP] {f.name} -> {res.matched_orig_name} (Nhóm: {res.group_id})")
+        logger.info(f"✅ Hoàn tất lọc trùng lặp CPU! Phát hiện {dup_count}/{len(all_files)} tệp trùng lặp.")
+        pipeline.export_current_report(input_dir=args.input_dir, output_report=args.output_report)
     else:
         pipeline = DocumentPipeline(output_dir=args.output_dir, mode=args.mode)
         pipeline.run(input_dir=args.input_dir, output_report=args.output_report)

@@ -154,10 +154,10 @@ class ExcelExporter:
                     conf_cell.comment = conf_comment
 
             # Ghi chú trực quan đối chiếu nhanh sai khác cho tệp trùng lặp
-            if item.get("is_duplicate"):
-                dup_col_idx = col_name_to_idx.get("Trạng thái trùng lặp")
-                if dup_col_idx:
-                    dup_cell = ws.cell(row=row_offset, column=dup_col_idx)
+            dup_col_idx = col_name_to_idx.get("Trạng thái trùng lặp")
+            if dup_col_idx:
+                dup_cell = ws.cell(row=row_offset, column=dup_col_idx)
+                if item.get("is_duplicate"):
                     diff_info = meta.get("diff_info") or {}
                     summary_txt = diff_info.get("summary")
                     sim_pct = diff_info.get("similarity_pct", 95.0)
@@ -172,6 +172,21 @@ class ExcelExporter:
                         diff_comment.width = 330
                         diff_comment.height = 95
                         dup_cell.comment = diff_comment
+                elif meta.get("duplicate_variants"):
+                    # Trường hợp tệp nạp đầu tiên nhưng có các tệp phái sinh/trùng lặp nạp sau
+                    variants_list = meta.get("duplicate_variants", [])
+                    vars_str = ", ".join(variants_list)
+                    gid = meta.get("duplicate_group_id", "")
+                    comment_txt = (
+                        f"⚠️ CẢNH BÁO TÀI LIỆU GỐC CÓ BẢN PHÁI SINH:\n"
+                        f"• Nhóm tài liệu: {gid or 'Chung nhóm'}\n"
+                        f"• Các tệp trùng lặp/nháp nạp sau: {vars_str}\n"
+                        f"• Vui lòng kiểm tra chi tiết tại Tab 'Đối chiếu Trùng lặp'."
+                    )
+                    rev_comment = Comment(comment_txt, "AI Document Group Auditor")
+                    rev_comment.width = 330
+                    rev_comment.height = 95
+                    dup_cell.comment = rev_comment
 
         # Căn chỉnh độ rộng cột dễ nhìn
         col_widths = {
@@ -231,8 +246,11 @@ class ExcelExporter:
             if deleted_snippets:
                 deleted_snippets = "• " + deleted_snippets
 
+            group_id = item.get("duplicate_group_id") or meta.get("duplicate_group_id") or "N/A"
+
             diff_rows.append({
                 "STT": idx,
+                "Mã nhóm (Group ID)": group_id,
                 "Tên tệp trùng lặp": item.get("file_name", ""),
                 "Tệp gốc đối chiếu": orig_name,
                 "Độ tương đồng": sim_str,

@@ -36,9 +36,12 @@ class StateTracker:
                 cursor.execute("ALTER TABLE processed_files ADD COLUMN simhash TEXT;")
             if "duplicate_of" not in columns:
                 cursor.execute("ALTER TABLE processed_files ADD COLUMN duplicate_of TEXT;")
+            if "duplicate_group_id" not in columns:
+                cursor.execute("ALTER TABLE processed_files ADD COLUMN duplicate_group_id TEXT;")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_simhash ON processed_files(simhash);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_hash ON processed_files(file_hash);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_duplicate_of ON processed_files(duplicate_of);")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_duplicate_group_id ON processed_files(duplicate_group_id);")
 
             # Đồng bộ các bản ghi đường dẫn tương đối cũ sang đường dẫn tuyệt đối chuẩn
             cursor.execute("SELECT file_path, file_hash, simhash, status, is_duplicate, metadata_json FROM processed_files")
@@ -83,7 +86,8 @@ class StateTracker:
         is_duplicate: bool = False,
         duplicate_of: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        simhash: Optional[str] = None
+        simhash: Optional[str] = None,
+        duplicate_group_id: Optional[str] = None
     ):
         norm_p = self._norm(file_path)
         with sqlite3.connect(self.db_path) as conn:
@@ -109,12 +113,25 @@ class StateTracker:
                     if row and row[0]:
                         duplicate_of = row[0]
 
-            if metadata is not None and duplicate_of:
-                metadata["duplicate_of"] = duplicate_of
+            # Nếu duplicate_group_id không truyền vào, lấy giá trị cũ hoặc từ metadata
+            if duplicate_group_id is None:
+                if metadata and metadata.get("duplicate_group_id"):
+                    duplicate_group_id = str(metadata["duplicate_group_id"])
+                else:
+                    cursor.execute("SELECT duplicate_group_id FROM processed_files WHERE file_path = ?", (norm_p,))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        duplicate_group_id = row[0]
+
+            if metadata is not None:
+                if duplicate_of:
+                    metadata["duplicate_of"] = duplicate_of
+                if duplicate_group_id:
+                    metadata["duplicate_group_id"] = duplicate_group_id
 
             cursor.execute("""
-                INSERT OR REPLACE INTO processed_files (file_path, file_hash, simhash, status, is_duplicate, duplicate_of, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO processed_files (file_path, file_hash, simhash, status, is_duplicate, duplicate_of, duplicate_group_id, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 norm_p,
                 file_hash,
@@ -122,9 +139,70 @@ class StateTracker:
                 status,
                 1 if is_duplicate else 0,
                 duplicate_of,
+                duplicate_group_id,
                 json.dumps(metadata, ensure_ascii=False) if metadata else None
             ))
             conn.commit()
+
+    def update_duplicate_reverse_link(
+        self,
+        orig_file_identifier: str,
+        dup_file_name: str,
+        group_id: Optional[str] = None
+    ) -> bool:
+        """
+        Cập nhật ngược (Reverse Link) cho tệp gốc khi có tệp phái sinh / trùng lặp nạp sau.
+        - Tìm bản ghi của tệp gốc qua file_path hoặc tên file (Path(file_path).name).
+        - Thêm dup_file_name vào danh sách duplicate_variants trong metadata.
+        - Cập nhật duplicate_group_id.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            norm_id = self._norm(orig_file_identifier)
+            # Tìm chính xác qua đường dẫn
+            cursor.execute("SELECT file_path, duplicate_group_id, metadata_json FROM processed_files WHERE file_path = ?", (norm_id,))
+            row = cursor.fetchone()
+
+            # Nếu không tìm thấy, tìm qua tên file (Path(file_path).name)
+            if not row:
+                target_name = Path(orig_file_identifier).name
+                cursor.execute("SELECT file_path, duplicate_group_id, metadata_json FROM processed_files")
+                all_rows = cursor.fetchall()
+                for fp, gid, mjson in all_rows:
+                    if Path(fp).name == target_name:
+                        row = (fp, gid, mjson)
+                        break
+
+            if not row:
+                return False
+
+            orig_path, current_gid, meta_json = row
+            meta = json.loads(meta_json) if meta_json else {}
+
+            # Cập nhật danh sách các biến thể trùng lặp
+            variants = meta.get("duplicate_variants", [])
+            if not isinstance(variants, list):
+                variants = []
+            if dup_file_name not in variants:
+                variants.append(dup_file_name)
+            meta["duplicate_variants"] = variants
+            meta["has_duplicates"] = True
+
+            # Gán trạng thái rõ ràng
+            meta["duplicate_status"] = f"Có bản trùng lặp (với {', '.join(variants)})"
+
+            # Cập nhật Group ID nếu có
+            final_gid = group_id or current_gid or meta.get("duplicate_group_id")
+            if final_gid:
+                meta["duplicate_group_id"] = final_gid
+
+            cursor.execute("""
+                UPDATE processed_files
+                SET duplicate_group_id = ?, metadata_json = ?
+                WHERE file_path = ?
+            """, (final_gid, json.dumps(meta, ensure_ascii=False), orig_path))
+            conn.commit()
+            return True
 
     @staticmethod
     def _is_volume_accessible(path: Path) -> bool:
@@ -182,14 +260,16 @@ class StateTracker:
     def get_all_completed(self) -> Dict[str, Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT file_path, is_duplicate, duplicate_of, metadata_json FROM processed_files WHERE status = 'COMPLETED'")
+            cursor.execute("SELECT file_path, is_duplicate, duplicate_of, duplicate_group_id, metadata_json FROM processed_files WHERE status = 'COMPLETED'")
             rows = cursor.fetchall()
             results = {}
-            for path_str, is_dup, dup_of, meta_json in rows:
+            for path_str, is_dup, dup_of, dup_gid, meta_json in rows:
                 norm_p = self._norm(path_str)
                 meta = json.loads(meta_json) if meta_json else {}
                 if dup_of and "duplicate_of" not in meta:
                     meta["duplicate_of"] = dup_of
+                if dup_gid and "duplicate_group_id" not in meta:
+                    meta["duplicate_group_id"] = dup_gid
                 # Ưu tiên giữ bản ghi không phải "Tài liệu trùng lặp" nếu có cả bản ghi cũ và mới
                 if norm_p in results and meta.get("title") == "Tài liệu trùng lặp":
                     continue
@@ -198,6 +278,7 @@ class StateTracker:
                     "file_path": norm_p,
                     "is_duplicate": bool(is_dup),
                     "duplicate_of": dup_of or meta.get("duplicate_of"),
+                    "duplicate_group_id": dup_gid or meta.get("duplicate_group_id"),
                     "metadata": meta
                 }
             return results
