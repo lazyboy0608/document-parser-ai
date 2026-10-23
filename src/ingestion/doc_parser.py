@@ -106,12 +106,18 @@ def _apply_smart_sampling(text: str, max_head_chars: int = 12000, tail_lines_cou
     return "\n".join(sampled).strip()
 
 
-def extract_text_from_doc(file_path: Path, max_head_chars: int = 8500, tail_lines_count: int = 6) -> str:
+def extract_text_from_doc(
+    file_path: Path,
+    max_head_chars: int = 8500,
+    tail_lines_count: int = 6,
+    full_text: bool = False,
+) -> str:
     """
     Trích xuất nội dung văn bản từ tệp Word legacy .doc (Word 97-2003):
-    1. Ưu tiên giải pháp Pure-Python (olefile): Tốc độ mili-giây, chống hoàn toàn popup 'Show Repairs' của MS Word.
-    2. Fallback sang MS Word COM Automation ngầm nếu tệp OLE đặc thù và Windows Word khả dụng.
-    3. Áp dụng Smart Content-Aware Sampling để đồng bộ với định dạng PDF và DOCX.
+    1. Nếu full_text=True: Trích xuất toàn văn 100% tài liệu (phục vụ đối chiếu sai khác Diff).
+    2. Nếu full_text=False: Áp dụng Smart Content-Aware Sampling phục vụ trích xuất Metadata.
+    3. Ưu tiên giải pháp Pure-Python (olefile): Tốc độ mili-giây, chống hoàn toàn popup 'Show Repairs' của MS Word.
+    4. Fallback sang MS Word COM Automation ngầm nếu tệp OLE đặc thù và Windows Word khả dụng.
     """
     abs_path = str(file_path.resolve())
     if not os.path.exists(abs_path):
@@ -122,6 +128,8 @@ def extract_text_from_doc(file_path: Path, max_head_chars: int = 8500, tail_line
     try:
         ole_text = _extract_text_via_olefile(file_path)
         if len(ole_text.strip()) >= 30:
+            if full_text:
+                return ole_text.strip()
             return _apply_smart_sampling(ole_text, max_head_chars, tail_lines_count)
     except Exception:
         pass
@@ -149,6 +157,8 @@ def extract_text_from_doc(file_path: Path, max_head_chars: int = 8500, tail_line
             NoEncodingDialog=True
         )
         raw_text = doc.Content.Text.strip()
+        if full_text:
+            return raw_text
         return _apply_smart_sampling(raw_text, max_head_chars, tail_lines_count)
     except Exception as e:
         # Nếu Word COM cũng lỗi, thử quét nhị phân thô lấy chuỗi ký tự UTF-8/Latin/Cyrillic
@@ -160,6 +170,8 @@ def extract_text_from_doc(file_path: Path, max_head_chars: int = 8500, tail_line
             words = [w for w in cleaned.split() if len(w) >= 2]
             if len(words) >= 15:
                 raw_text = " ".join(words)
+                if full_text:
+                    return raw_text
                 return _apply_smart_sampling(raw_text, max_head_chars, tail_lines_count)
         except Exception:
             pass

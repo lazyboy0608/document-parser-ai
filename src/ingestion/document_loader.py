@@ -66,7 +66,7 @@ class DocumentLoader:
         elif ext == ".docx":
             text = extract_text_from_docx(file_path, full_text=full_text)
         elif ext == ".doc":
-            text = extract_text_from_doc(file_path)
+            text = extract_text_from_doc(file_path, full_text=full_text)
         elif ext == ".txt":
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
