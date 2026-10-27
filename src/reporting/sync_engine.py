@@ -226,7 +226,7 @@ class ExcelSyncEngine:
         # Tái xuất lại file Excel để xóa các ô viền cam và cập nhật điểm số mới
         if results["updated_files_count"] > 0 and date_str:
             from src.pipeline import DocumentPipeline
-            pipeline = DocumentPipeline(output_dir=self.output_dir)
+            pipeline = DocumentPipeline(output_dir=self.output_dir, db_path=self.db_path)
             reexported = pipeline.export_current_report(date_str=date_str, output_report=excel_path)
             results["reexported_excel"] = reexported
             logger.info(f"📊 Đã làm mới báo cáo Excel sau đồng bộ: {reexported}")

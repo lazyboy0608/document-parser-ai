@@ -3,7 +3,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Set, Optional
+from typing import Set, Optional, Dict
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
@@ -12,6 +12,7 @@ from config.settings import settings
 from src.utils.logger import logger
 from src.ingestion.document_loader import DocumentLoader
 from src.pipeline import DocumentPipeline
+from src.reporting.sync_engine import ExcelSyncEngine
 
 
 def is_ignored_file(file_path: Path, output_report: Optional[Path] = None) -> bool:
@@ -172,6 +173,63 @@ class HotFolderEventHandler(FileSystemEventHandler):
             self._enqueue_file(target)
 
 
+class ExcelSyncEventHandler(FileSystemEventHandler):
+    """
+    Lắng nghe sự kiện người dùng chỉnh sửa và Lưu file Excel báo cáo (Ctrl + S) trong thư mục output_dir.
+    Tự động đưa vào hàng đợi đồng bộ ngược mà không cần người dùng gõ lệnh thủ công.
+    Có cơ chế chống vòng lặp vô tận (Infinite Loop Guard) và Cool-down Window.
+    """
+    def __init__(
+        self,
+        excel_queue: queue.Queue,
+        system_modifying: Set[str],
+        lock: threading.Lock,
+        cooldown_seconds: float = 6.0,
+    ):
+        super().__init__()
+        self.excel_queue = excel_queue
+        self.system_modifying = system_modifying
+        self.lock = lock
+        self.cooldown_seconds = cooldown_seconds
+        self.last_sync_times: Dict[str, float] = {}
+
+    def _check_and_enqueue(self, event_path: str):
+        target = Path(event_path)
+        name = target.name
+        # Chỉ quan tâm đến file Excel báo cáo tổng hợp
+        if not (name.endswith(".xlsx") and "tong_hop_tai_lieu" in name.lower()):
+            return
+        # Bỏ qua file khóa tạm thời của MS Excel (~$) hoặc file ẩn (.)
+        if name.startswith("~$") or name.startswith("."):
+            return
+
+        resolved = str(target.resolve())
+        now = time.monotonic()
+
+        with self.lock:
+            # 1. Bỏ qua nếu file này do chính hệ thống đang ghi ra (chống vòng lặp vô tận)
+            if resolved in self.system_modifying:
+                return
+
+            # 2. Bỏ qua nếu vừa mới đồng bộ xong trong khoảng cooldown_seconds
+            last_time = self.last_sync_times.get(resolved, 0.0)
+            if (now - last_time) < self.cooldown_seconds:
+                return
+
+            self.last_sync_times[resolved] = now
+
+        logger.info(f"📊 [EXCEL WATCHER] Phát hiện file Excel vừa được lưu/thay đổi: {target.name} -> Đưa vào hàng đợi tự động đồng bộ...")
+        self.excel_queue.put(target)
+
+    def on_modified(self, event: FileSystemEvent):
+        if not event.is_directory:
+            self._check_and_enqueue(os.fsdecode(event.src_path))
+
+    def on_created(self, event: FileSystemEvent):
+        if not event.is_directory:
+            self._check_and_enqueue(os.fsdecode(event.src_path))
+
+
 class HotFolderWatcher:
     """
     Dịch vụ chạy ngầm 24/7 theo dõi thư mục chung (Hot Folder / Shared Network Drive):
@@ -179,6 +237,7 @@ class HotFolderWatcher:
     2. Lắng nghe đệ quy (recursive=True) mọi file hoặc thư mục con được người dùng thả vào.
     3. Chờ từng file ghi hoàn tất 100% (wait_until_file_ready) trước khi gọi AI Pipeline.
     4. Xử lý xong tự động phân loại vào output_documents và cập nhật ngay vào file Excel báo cáo.
+    5. [MỚI] Tự động đồng bộ ngược khi người dùng lưu file Excel (Zero-Click Auto Sync).
     """
     def __init__(
         self,
@@ -187,6 +246,7 @@ class HotFolderWatcher:
         output_report: Optional[Path] = None,
         stable_seconds: float = settings.WATCH_STABLE_SECONDS,
         mode: str = "move",
+        db_path: Optional[Path] = None,
     ):
         self.watch_dir = Path(watch_dir).resolve()
         self.output_dir = Path(output_dir or settings.OUTPUT_DIR).resolve()
@@ -197,13 +257,71 @@ class HotFolderWatcher:
 
         self.stable_seconds = stable_seconds
         self.mode = mode
+        self.db_path = Path(db_path).resolve() if db_path else None
 
-        self.pipeline = DocumentPipeline(output_dir=self.output_dir, mode=self.mode)
+        self.pipeline = DocumentPipeline(output_dir=self.output_dir, mode=self.mode, db_path=self.db_path)
+        self.sync_engine = ExcelSyncEngine(db_path=self.db_path, output_dir=self.output_dir)
+
+        # Hàng đợi tiếp nhận tài liệu đầu vào
         self.file_queue: queue.Queue[Optional[Path]] = queue.Queue()
         self.queued_paths: Set[str] = set()
+
+        # Hàng đợi tự động đồng bộ Excel khi người dùng Lưu file
+        self.excel_queue: queue.Queue[Optional[Path]] = queue.Queue()
+        self.system_modifying_excel: Set[str] = set()
+
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.observer = Observer()
+
+    def _excel_sync_loop(self):
+        """
+        Luồng Worker chạy ngầm chuyên trách tự động đồng bộ khi người dùng lưu file Excel.
+        """
+        while not self.stop_event.is_set():
+            try:
+                excel_path = self.excel_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            if excel_path is None:
+                self.excel_queue.task_done()
+                break
+
+            resolved_p = str(excel_path.resolve())
+            try:
+                # Đợi cho đến khi Excel nhả hoàn toàn file lock (người dùng bấm Save hoặc đóng Excel)
+                wait_sec = min(self.stable_seconds, 1.5)
+                logger.info(f"⏳ [AUTO-SYNC] Đang đợi MS Excel nhả khóa tệp ({wait_sec}s): {excel_path.name}...")
+                is_ready = wait_until_file_ready(excel_path, stable_seconds=wait_sec, timeout=30.0)
+                if not is_ready:
+                    logger.warning(f"⚠️ [AUTO-SYNC] Bỏ qua đồng bộ vì tệp {excel_path.name} vẫn đang bị khóa độc quyền.")
+                    continue
+
+                # Đánh dấu cờ hệ thống đang cập nhật để Watcher không tự bắt lặp lại
+                with self.lock:
+                    self.system_modifying_excel.add(resolved_p)
+
+                try:
+                    logger.info(f"🔄 [AUTO-SYNC] Bắt đầu tự động đồng bộ dữ liệu người dùng đã sửa từ: {excel_path.name}")
+                    sync_res = self.sync_engine.sync_from_excel(excel_path, auto_recluster=True)
+                    if sync_res.get("updated_files_count", 0) > 0:
+                        logger.info(
+                            f"✨ [AUTO-SYNC THÀNH CÔNG] Đã tự động cập nhật {sync_res['updated_files_count']} tệp vào CSDL "
+                            f"và tái phân cụm {len(sync_res.get('reclustered_files', []))} thư mục!"
+                        )
+                    else:
+                        logger.info(f"ℹ️ [AUTO-SYNC] File Excel {excel_path.name} không có thay đổi mới nào so với CSDL.")
+                finally:
+                    # Giữ cờ trong 3 giây để triệt tiêu mọi sự kiện IO dư âm của quá trình ghi lại Excel
+                    time.sleep(3.0)
+                    with self.lock:
+                        self.system_modifying_excel.discard(resolved_p)
+
+            except Exception as sync_err:
+                logger.error(f"❌ [AUTO-SYNC] Lỗi khi tự động đồng bộ từ {excel_path.name}: {sync_err}")
+            finally:
+                self.excel_queue.task_done()
 
     def _worker_loop(self):
         """
@@ -271,14 +389,29 @@ class HotFolderWatcher:
             self.file_queue, self.queued_paths, self.lock, output_report=self.custom_output_report
         )
         self.observer.schedule(event_handler, str(self.watch_dir), recursive=True)
+
+        # Đăng ký theo dõi sự kiện lưu file Excel trong thư mục đầu ra output_dir
+        excel_handler = ExcelSyncEventHandler(
+            excel_queue=self.excel_queue,
+            system_modifying=self.system_modifying_excel,
+            lock=self.lock,
+            cooldown_seconds=6.0,
+        )
+        self.observer.schedule(excel_handler, str(self.output_dir), recursive=True)
+
         self.observer.start()
 
         worker_thread = threading.Thread(target=self._worker_loop, name="HotFolderWorker", daemon=True)
         worker_thread.start()
 
+        excel_sync_thread = threading.Thread(target=self._excel_sync_loop, name="ExcelAutoSyncWorker", daemon=True)
+        excel_sync_thread.start()
+
         logger.info("=" * 65)
         logger.info(f"👀 [HOT FOLDER WATCHER] Đang lắng nghe trực tuyến tại: {self.watch_dir}")
+        logger.info(f"📊 [AUTO-SYNC EXCEL] Đang lắng nghe sự kiện lưu Excel tại: {self.output_dir}")
         logger.info("   -> Hãy thả tệp hoặc cả thư mục chứa tài liệu vào đường dẫn trên.")
+        logger.info("   -> Mở file Excel chỉnh sửa và bấm Ctrl+S để tự động đồng bộ CSDL.")
         logger.info(f"   -> Thời gian xác nhận hoàn tất ghi file: {self.stable_seconds} giây")
         logger.info("   -> Nhấn Ctrl+C để dừng dịch vụ.")
         logger.info("=" * 65)
@@ -326,6 +459,13 @@ class HotFolderWatcher:
                                     self.file_queue, self.queued_paths, self.lock, output_report=self.custom_output_report
                                 )
                                 self.observer.schedule(event_handler, str(self.watch_dir), recursive=True)
+                                excel_handler = ExcelSyncEventHandler(
+                                    excel_queue=self.excel_queue,
+                                    system_modifying=self.system_modifying_excel,
+                                    lock=self.lock,
+                                    cooldown_seconds=6.0,
+                                )
+                                self.observer.schedule(excel_handler, str(self.output_dir), recursive=True)
                                 self.observer.start()
                                 reconnected = True
                                 break
@@ -353,6 +493,7 @@ class HotFolderWatcher:
         """Dừng dịch vụ an toàn."""
         self.stop_event.set()
         self.file_queue.put(None)
+        self.excel_queue.put(None)
         try:
             if getattr(self, "observer", None) and self.observer.is_alive():
                 self.observer.stop()

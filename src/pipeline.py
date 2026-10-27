@@ -18,10 +18,11 @@ class DocumentPipeline:
       Nếu phát hiện trùng lặp -> Short-circuit dừng ngay lập tức, không gọi AI.
     - TẦNG 2: AIExtractionPipeline chuyên sâu chỉ tiếp nhận tệp mới tinh.
     """
-    def __init__(self, output_dir: Optional[Path] = None, mode: str = "move"):
+    def __init__(self, output_dir: Optional[Path] = None, mode: str = "move", db_path: Optional[Path] = None):
         self.output_dir = Path(output_dir or settings.OUTPUT_DIR).resolve()
         self.mode = mode
-        self.state_tracker = StateTracker(settings.CACHE_DIR / "pipeline_state.db")
+        self.db_path = Path(db_path).resolve() if db_path else (settings.CACHE_DIR / "pipeline_state.db")
+        self.state_tracker = StateTracker(self.db_path)
         self.file_organizer = FileOrganizer(self.output_dir)
 
         # Khởi tạo Tầng 1: Lọc trùng lặp CPU siêu tốc
@@ -353,9 +354,12 @@ class DocumentPipeline:
 
         for idx, file_path in enumerate(all_files, 1):
             logger.info(f"[{idx}/{total_files}] Đang xử lý: {file_path.name}")
-            res = self.process_single_file(file_path, date_str=date_str)
-            if res is not None:
-                processed_results.append(res)
+            try:
+                res = self.process_single_file(file_path, date_str=date_str)
+                if res is not None:
+                    processed_results.append(res)
+            except Exception as e:
+                logger.error(f"❌ [BYPASS LỖI] Lỗi không mong muốn khi xử lý '{file_path.name}': {e}. Bỏ qua tệp này để tiếp tục xử lý các tệp kế tiếp.")
 
         # Xuất báo cáo tổng kết Excel theo ngày
         saved_path = self.export_current_report(

@@ -1,0 +1,56 @@
+name: CI/CD Pipeline - Windows Server Deployment
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # GIAI ĐOẠN 1: KIỂM THỬ TỰ ĐỘNG (CI)
+  continuous_integration:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Thiết lập Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cài đặt Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Thực thi Toàn bộ Test Suite (24 Tests)
+        run: |
+          python -m unittest discover tests
+
+  # GIAI ĐOẠN 2: TRIỂN KHAI TỰ ĐỘNG LÊN MÁY CHỦ VẬT LÝ (CD)
+  continuous_deployment:
+    needs: continuous_integration
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: self-hosted  # Chạy trực tiếp trên Windows Server vật lý
+    steps:
+      - name: Cập nhật Mã nguồn mới nhất
+        run: |
+          cd D:\NLP_Production
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Đồng bộ Thư viện mới
+        run: |
+          cd D:\NLP_Production
+          .\.venv\Scripts\Activate.ps1
+          pip install -r requirements.txt
+
+      - name: Kiểm tra trạng thái Mô hình AI
+        run: |
+          ollama list
+
+      - name: Khởi động lại Windows Service
+        run: |
+          D:\NLP_Production\scripts\nssm.exe restart NLP_Document_Service
+          Write-Host "✅ Dịch vụ NLP_Document_Service đã được cập nhật và khởi động lại thành công!"
