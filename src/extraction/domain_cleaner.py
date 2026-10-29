@@ -52,11 +52,24 @@ MISSING_PHRASE_REGEX = re.compile(
 
 
 def is_missing_or_unknown_phrase(val: Any) -> bool:
-    """Kiểm tra chuỗi có phải câu báo thiếu thông tin của LLM (tiếng Việt, tiếng Anh, tiếng Trung)."""
+    """Kiểm tra chuỗi có phải câu báo thiếu thông tin của LLM (tiếng Việt, tiếng Anh, tiếng Nga, tiếng Trung hoặc placeholder rác)."""
     if val is None:
         return True
     s = str(val).strip()
-    if not s or s.lower() in {"", "n/a", "na", "none", "no", "unknown", "chưa rõ", "null", "nan"}:
+    s_clean = s.strip(" .-_:;\"'()[]{}").lower()
+    if not s_clean or s_clean in {
+        "", "n/a", "na", "none", "no", "unknown", "chưa rõ", "null", "nan",
+        "...", "missing", "unspecified", "not specified", "not mentioned",
+        "missing or unexpected value", "missing or unspecified value",
+        "none specified", "unspecified value", "не указано", "нет данных",
+        "не определено", "отсутствует", "не указан в тексте",
+        "не указано в предоставленном тексте", "не указано в предоставленной информации",
+    }:
+        return True
+    if any(p in s_clean for p in [
+        "missing or unexpected", "missing or unspecified", "unspecified value",
+        "не указан", "предоставленн"
+    ]):
         return True
     # Kiểm tra chuỗi tiếng Trung báo thiếu
     if re.search(r"[\u4e00-\u9fff]", s) and any(kw in s for kw in ["未", "无", "不", "暂", "具体"]):
@@ -247,6 +260,17 @@ def extract_enclosures_from_raw_text(raw_text: str) -> Tuple[str, str]:
         if deduped:
             return str(len(deduped)), "; ".join(deduped)
 
+    # 2. Nếu không có danh mục chi tiết, tìm cụm từ thông báo số lượng phụ bản tổng quan (ví dụ: 'và 8 phụ bản', 'kèm 5 phụ bản', '8 enclosures')
+    m_summary = re.search(
+        r"(?:và|va|gồm|gom|kèm|kem|có|co|with|including)?\s*(\d+)\s*(?:phụ\s*bản|phu\s*ban|enclosures?|приложен[ийа-я]*)",
+        raw_text,
+        re.IGNORECASE
+    )
+    if m_summary:
+        cnt = m_summary.group(1)
+        if 1 <= int(cnt) <= 50:
+            return cnt, f"{cnt} phụ bản (theo tài liệu gốc)"
+
     return "No", "None"
 
 
@@ -279,7 +303,7 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
             data["well_link"] = m.group(1) if "-" in m.group(1) else f"LK-{m.group(1)}"
         elif raw_text:
             # Bổ sung nhận diện giếng khoan tiếng Nga (Скважина / Скв.)
-            m_ru = re.search(r"(?:Скважина|Скв\.?)\s*[:№\s]*([0-9A-Za-zА-Яа-я\-]+(?:\s*\([^\)]+\))?)", raw_text, re.IGNORECASE)
+            m_ru = re.search(r"(?:Скважина|Скв\.?)\s*[:№\s]*([0-9A-Za-z\u0400-\u04FF\-]+(?:\s*\([^\)]+\))?)", raw_text, re.IGNORECASE)
             if m_ru:
                 data["well_link"] = m_ru.group(1).strip()
 
@@ -364,6 +388,42 @@ def clean_metadata_fields(metadata: DocumentMetadata, raw_text: str = "") -> Doc
         elif raw_text:
             valid_parts = [p for p in author_parts if p.lower() in raw_text.lower() or len(p) >= 3]
             data["author"] = "; ".join(valid_parts) if valid_parts else "None"
+
+    # 4.5. Fallback bổ sung dữ liệu tiếng Nga & tiếng Việt nếu LLM bị khuyết
+    if raw_text:
+        # Bổ sung Tên Mỏ / Lô / Hợp đồng tiếng Nga nếu chưa có
+        if not data.get("contract_name") or data["contract_name"] in {"N/A", "None", "nan", "", "Chưa rõ"}:
+            m_ru_field = re.search(r"(?:Месторождение|Площадь|Блок)\s*[:№\s]*([0-9A-Za-z\u0400-\u04FF\-\s]+?)(?=\n|\r|$|;|,|\d+\/)", raw_text, re.IGNORECASE)
+            if m_ru_field:
+                data["contract_name"] = m_ru_field.group(1).strip()
+            elif re.search(r"\bБелый\s+Тигр\b", raw_text, re.IGNORECASE):
+                data["contract_name"] = "Белый Тигр"
+
+        # Bổ sung Ngày tháng nếu chưa có
+        if not data.get("public_date") or data["public_date"] in {"Chưa rõ", "Unknown", "N/A", "None", ""}:
+            m_date = re.search(r"(?:Дата\s+проведения\s+работ|Дата\s+цементирования|Дата|Ngày\s+ban\s+hành|Ngày)\s*[:\s]*([0-9]{1,2}[./-][0-9]{1,2}[./-][0-9]{2,4}\s*(?:г\.?)?)", raw_text, re.IGNORECASE)
+            if m_date:
+                data["public_date"] = m_date.group(1).strip()
+            else:
+                m_year = re.search(r"\b(19\d{2}|20\d{2})\b", raw_text[:2000])
+                if m_year:
+                    data["public_date"] = m_year.group(1).strip()
+
+        # Bổ sung Tiêu đề tiếng Nga nếu chưa có
+        if not data.get("title") or data["title"] in {"Chưa rõ", "Unknown", "N/A", "None", ""}:
+            m_ru_title = re.search(r"((?:ЗАКЛЮЧЕНИЕ|ОТЧЕТ|АКТ|ПРОТОКОЛ)(?:\s*\([^\)]+\))?)", raw_text, re.IGNORECASE)
+            if m_ru_title:
+                data["title"] = m_ru_title.group(1).strip()
+
+        # Bổ sung Đơn vị ban hành tiếng Việt / Nga nếu chưa có
+        if not data.get("originator") or data["originator"] in {"Chưa rõ", "Unknown", "N/A", "None", ""}:
+            if not data.get("contractor") or data["contractor"] in {"N/A", "None"}:
+                m_vn_orig = re.search(r"\b((?:LIÊN\s+ĐOÀN|TỔNG\s+CỤC|CÔNG\s+TY|TRUNG\s+TÂM)\s+[0-9A-ZÀ-Ỹ\s]+?)(?=\n|\r|\.|$)", raw_text, re.IGNORECASE)
+                if m_vn_orig and len(m_vn_orig.group(1).strip()) <= 60:
+                    data["originator"] = m_vn_orig.group(1).strip()
+            elif re.search(r"\bКПГ\b", raw_text) or "Контора Промысловой Геофизики" in raw_text:
+                if data.get("contractor") in {"N/A", "None", "", "Chưa rõ"}:
+                    data["contractor"] = "Контора Промысловой Геофизики"
 
     # Bổ sung Contract Name / Block từ well_link nếu contract_name vẫn chưa có
     if not data.get("contract_name") or data["contract_name"] in {"N/A", "None", "nan", ""}:

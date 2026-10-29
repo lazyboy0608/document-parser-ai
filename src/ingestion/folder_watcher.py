@@ -3,7 +3,7 @@ import queue
 import threading
 import time
 from pathlib import Path
-from typing import Set, Optional, Dict
+from typing import Set, Optional, Dict, Any
 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
@@ -55,12 +55,14 @@ def wait_until_file_ready(
     stable_seconds: float = settings.WATCH_STABLE_SECONDS,
     timeout: float = settings.WATCH_TIMEOUT_SECONDS,
     check_interval: float = 1.0,
+    check_write: bool = True,
 ) -> bool:
     """
     Chống lỗi Incomplete File Write khi copy file nặng (50MB+) hoặc hàng trăm file qua mạng LAN/SMB:
     1. Kiểm tra kích thước tệp (st_size) > 0 và không thay đổi liên tục trong khoảng `stable_seconds` (mặc định 3 giây).
-    2. Thử mở tệp ở chế độ đọc/ghi nhị phân ('rb+') để xác nhận tiến trình copy của OS/Windows Explorer
+    2. Nếu check_write=True: Thử mở tệp ở chế độ đọc/ghi nhị phân ('rb+') để xác nhận tiến trình copy của OS/Windows Explorer
        đã nhả hoàn toàn file lock (không còn bị giữ quyền ghi độc quyền).
+    3. Nếu check_write=False: Chỉ cần tệp đọc được ('rb') và kích thước ổn định (áp dụng khi người dùng mở Excel và bấm Save).
     """
     start_time = time.monotonic()
     last_size = -1
@@ -79,24 +81,33 @@ def wait_until_file_ready(
             if stable_start is None:
                 stable_start = time.monotonic()
             elif (time.monotonic() - stable_start) >= stable_seconds:
-                # Xác nhận OS đã nhả khóa ghi bằng cách thử mở ở chế độ 'rb+'
-                try:
-                    with open(file_path, "rb+"):
-                        pass
-                    return True
-                except PermissionError:
-                    # Nếu tệp là Read-Only thực sự trên đĩa nhưng không bị tiến trình khác khóa ghi
-                    if not os.access(file_path, os.W_OK):
-                        try:
-                            with open(file_path, "rb"):
-                                pass
-                            return True
-                        except OSError:
+                if not check_write:
+                    # Chỉ cần mở đọc thành công ở chế độ 'rb'
+                    try:
+                        with open(file_path, "rb"):
                             pass
-                    # Vẫn đang bị tiến trình copy giữ lock -> tiếp tục đợi
-                    stable_start = None
-                except OSError:
-                    stable_start = None
+                        return True
+                    except OSError:
+                        stable_start = None
+                else:
+                    # Xác nhận OS đã nhả khóa ghi bằng cách thử mở ở chế độ 'rb+'
+                    try:
+                        with open(file_path, "rb+"):
+                            pass
+                        return True
+                    except PermissionError:
+                        # Nếu tệp là Read-Only thực sự trên đĩa nhưng không bị tiến trình khác khóa ghi
+                        if not os.access(file_path, os.W_OK):
+                            try:
+                                with open(file_path, "rb"):
+                                    pass
+                                return True
+                            except OSError:
+                                pass
+                        # Vẫn đang bị tiến trình copy giữ lock -> tiếp tục đợi
+                        stable_start = None
+                    except OSError:
+                        stable_start = None
         else:
             last_size = current_size
             stable_start = None
@@ -118,12 +129,14 @@ class HotFolderEventHandler(FileSystemEventHandler):
         queued_paths: Set[str],
         lock: threading.Lock,
         output_report: Optional[Path] = None,
+        pipeline: Optional[Any] = None,
     ):
         super().__init__()
         self.file_queue = file_queue
         self.queued_paths = queued_paths
         self.lock = lock
         self.output_report = output_report
+        self.pipeline = pipeline
 
     def _enqueue_file(self, path: Path):
         try:
@@ -172,11 +185,25 @@ class HotFolderEventHandler(FileSystemEventHandler):
         else:
             self._enqueue_file(target)
 
+    def on_deleted(self, event: FileSystemEvent):
+        target = Path(os.fsdecode(event.src_path))
+        with self.lock:
+            try:
+                self.queued_paths.discard(str(target.resolve()))
+            except Exception:
+                pass
+        if self.pipeline and not event.is_directory:
+            if target.name.startswith("~$") or target.name.startswith("."):
+                return
+            if target.suffix.lower() in DocumentLoader.SUPPORTED_EXTENSIONS:
+                self.pipeline.handle_file_deleted(target)
+
 
 class ExcelSyncEventHandler(FileSystemEventHandler):
     """
-    Lắng nghe sự kiện người dùng chỉnh sửa và Lưu file Excel báo cáo (Ctrl + S) trong thư mục output_dir.
-    Tự động đưa vào hàng đợi đồng bộ ngược mà không cần người dùng gõ lệnh thủ công.
+    Lắng nghe sự kiện người dùng:
+    1. Chỉnh sửa và Lưu file Excel báo cáo (Ctrl + S) trong thư mục output_dir -> Tự động đồng bộ CSDL.
+    2. Xóa tệp tài liệu hoặc thư mục trong output_dir -> Tự động dọn dẹp CSDL và giải phóng bộ nhớ băm.
     Có cơ chế chống vòng lặp vô tận (Infinite Loop Guard) và Cool-down Window.
     """
     def __init__(
@@ -185,6 +212,7 @@ class ExcelSyncEventHandler(FileSystemEventHandler):
         system_modifying: Set[str],
         lock: threading.Lock,
         cooldown_seconds: float = 6.0,
+        pipeline: Optional[Any] = None,
     ):
         super().__init__()
         self.excel_queue = excel_queue
@@ -192,6 +220,7 @@ class ExcelSyncEventHandler(FileSystemEventHandler):
         self.lock = lock
         self.cooldown_seconds = cooldown_seconds
         self.last_sync_times: Dict[str, float] = {}
+        self.pipeline = pipeline
 
     def _check_and_enqueue(self, event_path: str):
         target = Path(event_path)
@@ -228,6 +257,19 @@ class ExcelSyncEventHandler(FileSystemEventHandler):
     def on_created(self, event: FileSystemEvent):
         if not event.is_directory:
             self._check_and_enqueue(os.fsdecode(event.src_path))
+
+    def on_deleted(self, event: FileSystemEvent):
+        target = Path(os.fsdecode(event.src_path))
+        if target.name.startswith("~$") or target.name.startswith("."):
+            return
+        if event.is_directory:
+            if self.pipeline:
+                self.pipeline.handle_directory_deleted(target)
+        else:
+            ext = target.suffix.lower()
+            if ext in DocumentLoader.SUPPORTED_EXTENSIONS:
+                if self.pipeline:
+                    self.pipeline.handle_file_deleted(target)
 
 
 class HotFolderWatcher:
@@ -290,12 +332,12 @@ class HotFolderWatcher:
 
             resolved_p = str(excel_path.resolve())
             try:
-                # Đợi cho đến khi Excel nhả hoàn toàn file lock (người dùng bấm Save hoặc đóng Excel)
-                wait_sec = min(self.stable_seconds, 1.5)
-                logger.info(f"⏳ [AUTO-SYNC] Đang đợi MS Excel nhả khóa tệp ({wait_sec}s): {excel_path.name}...")
-                is_ready = wait_until_file_ready(excel_path, stable_seconds=wait_sec, timeout=30.0)
+                # Đợi cho đến khi Excel ghi xong file (người dùng bấm Save)
+                wait_sec = min(self.stable_seconds, 1.0)
+                logger.info(f"⏳ [AUTO-SYNC] Đang đợi MS Excel hoàn tất ghi tệp ({wait_sec}s): {excel_path.name}...")
+                is_ready = wait_until_file_ready(excel_path, stable_seconds=wait_sec, timeout=10.0, check_write=False)
                 if not is_ready:
-                    logger.warning(f"⚠️ [AUTO-SYNC] Bỏ qua đồng bộ vì tệp {excel_path.name} vẫn đang bị khóa độc quyền.")
+                    logger.warning(f"⚠️ [AUTO-SYNC] Bỏ qua đồng bộ vì tệp {excel_path.name} chưa sẵn sàng để đọc.")
                     continue
 
                 # Đánh dấu cờ hệ thống đang cập nhật để Watcher không tự bắt lặp lại
@@ -378,6 +420,9 @@ class HotFolderWatcher:
         """Khởi chạy dịch vụ lắng nghe thư mục."""
         self.watch_dir.mkdir(parents=True, exist_ok=True)
 
+        # 0. Tự động đối soát CSDL với đĩa vật lý trước khi khởi động
+        self.pipeline.reconcile_database_with_disk()
+
         if run_initial_scan:
             logger.info("🔍 [WATCHER] Kiểm tra các tài liệu hiện có trong thư mục trước khi vào chế độ trực chiến...")
             from datetime import datetime
@@ -386,7 +431,7 @@ class HotFolderWatcher:
             self.pipeline.run(input_dir=self.watch_dir, output_report=daily_report, date_str=today_str)
 
         event_handler = HotFolderEventHandler(
-            self.file_queue, self.queued_paths, self.lock, output_report=self.custom_output_report
+            self.file_queue, self.queued_paths, self.lock, output_report=self.custom_output_report, pipeline=self.pipeline
         )
         self.observer.schedule(event_handler, str(self.watch_dir), recursive=True)
 
@@ -396,6 +441,7 @@ class HotFolderWatcher:
             system_modifying=self.system_modifying_excel,
             lock=self.lock,
             cooldown_seconds=6.0,
+            pipeline=self.pipeline,
         )
         self.observer.schedule(excel_handler, str(self.output_dir), recursive=True)
 

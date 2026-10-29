@@ -71,8 +71,12 @@ class DocumentLoader:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                 text = f.read()
         elif ext in {".png", ".jpg", ".jpeg", ".tiff", ".bmp"}:
-            from .ocr_engine import extract_text_and_scores_from_image
-            text, ocr_lines = extract_text_and_scores_from_image(file_path)
+            try:
+                from .ocr_engine import extract_text_and_scores_from_image
+                text, ocr_lines = extract_text_and_scores_from_image(file_path)
+            except Exception as e:
+                logger.error(f"Lỗi khi OCR tệp hình ảnh {file_path.name}: {e}")
+                text, ocr_lines = "", []
             is_scanned = True
             page_images = [file_path]
 

@@ -40,13 +40,13 @@ class AIExtractionPipeline:
 
         metadata: Optional[DocumentMetadata] = None
 
-        # 1. Trích xuất văn bản số bằng Text LLM
-        if has_digital_content or not is_pure_scan:
+        # 1. Trích xuất siêu tốc bằng Text LLM trên dòng văn bản đã qua OCR / số hóa
+        if raw_text and raw_text.strip():
             try:
                 logger.info(f"-> [HYBRID TEXT - Tầng 1] Trích xuất siêu tốc qua Text LLM: {file_path.name}")
                 metadata = self.llm_extractor.extract(raw_text)
             except Exception as llm_err:
-                logger.warning(f"Text LLM gặp sự cố ({llm_err}), chuyển hướng sang VLM...")
+                logger.warning(f"Text LLM gặp sự cố ({llm_err}): {file_path.name}")
                 metadata = None
 
         # 2. Thẩm định thị giác có mục tiêu (Targeted VLM)

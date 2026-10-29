@@ -33,8 +33,25 @@ class ExactDeduplicator:
         """Đăng ký một tệp gốc vào danh bạ kiểm tra trùng lặp."""
         f_hash = file_hash or self.calculate_file_hash(file_path)
         self.seen_hashes.add(f_hash)
-        if f_hash not in self.hash_to_path:
-            self.hash_to_path[f_hash] = str(file_path)
+        self.hash_to_path[f_hash] = str(file_path)
+
+    def unregister_file(self, file_path: Path, file_hash: Optional[str] = None):
+        """Xóa mã băm của tệp khỏi danh bạ kiểm tra trùng lặp khi tệp bị xóa."""
+        fp_str = str(file_path)
+        fp_name = file_path.name
+        hashes_to_remove = set()
+        if file_hash:
+            hashes_to_remove.add(file_hash)
+        for h, p in list(self.hash_to_path.items()):
+            try:
+                if p == fp_str or Path(p).resolve() == Path(fp_str).resolve() or Path(p).name == fp_name:
+                    hashes_to_remove.add(h)
+            except Exception:
+                if p == fp_str or Path(p).name == fp_name:
+                    hashes_to_remove.add(h)
+        for h in hashes_to_remove:
+            self.seen_hashes.discard(h)
+            self.hash_to_path.pop(h, None)
 
     def find_duplicate(self, file_path: Path) -> Tuple[bool, Optional[str]]:
         """

@@ -239,6 +239,7 @@ class DocumentPipeline:
         input_dir: Optional[Path] = None,
         output_report: Optional[Path] = None,
         date_str: Optional[str] = None,
+        allow_backup_on_lock: bool = True,
     ) -> Optional[Path]:
         """
         Tổng hợp toàn bộ tài liệu của ngày <date_str> đã di chuyển/phân loại trong output_dir (kết hợp SQLite state)
@@ -267,7 +268,25 @@ class DocumentPipeline:
         ]
 
         if not daily_files:
-            logger.info(f"Không có tài liệu nào trong thư mục ngày {date_str}, bỏ qua tạo báo cáo Excel trống.")
+            logger.info(f"Không còn tài liệu nào trong thư mục ngày {date_str}.")
+            # Tự động dọn dẹp file Excel báo cáo và thư mục ngày nếu không còn tài liệu
+            excel_file = daily_dir / f"tong_hop_tai_lieu_{date_str}.xlsx"
+            if excel_file.exists():
+                try:
+                    excel_file.unlink()
+                    logger.info(f"🗑️ Đã xóa file Excel báo cáo {excel_file.name} do toàn bộ tài liệu trong ngày đã bị xóa.")
+                except Exception as e:
+                    logger.warning(f"Không thể xóa file Excel {excel_file.name}: {e}")
+
+            # Xóa các thư mục con rỗng trong daily_dir và bản thân daily_dir
+            try:
+                import shutil
+                remaining_files = [f for f in daily_dir.rglob("*") if f.is_file()]
+                if not remaining_files:
+                    shutil.rmtree(daily_dir, ignore_errors=True)
+                    logger.info(f"🧹 Đã dọn sạch thư mục ngày {date_str} để đảm bảo thư mục đầu ra trống hoàn toàn.")
+            except Exception as e:
+                logger.debug(f"Không thể dọn thư mục rỗng {daily_dir}: {e}")
             return None
 
         if output_report is None:
@@ -307,7 +326,7 @@ class DocumentPipeline:
                     "metadata": {}
                 })
 
-        saved_path = ExcelExporter.export(results, output_report)
+        saved_path = ExcelExporter.export(results, output_report, allow_backup_on_lock=allow_backup_on_lock)
         logger.info(f"📊 Đã cập nhật báo cáo Excel ngày {date_str} ({len(results)} tài liệu) tại: {saved_path}")
 
         # Chỉ sao lưu bản phụ nếu REPORTS_DIR là thư mục độc lập khác với output_dir
@@ -322,12 +341,88 @@ class DocumentPipeline:
 
         return saved_path
 
+    def reconcile_database_with_disk(self) -> int:
+        """
+        Đồng bộ CSDL SQLite với thực tế trên đĩa vật lý:
+        Quét và xóa toàn bộ các bản ghi trong processed_files mà tệp vật lý không còn tồn tại.
+        Đồng thời giải phóng bộ nhớ đệm băm (SimHash & Exact Hash).
+        """
+        removed_paths = self.state_tracker.cleanup_missing_files(return_paths=True)
+        if removed_paths:
+            logger.info(f"🧹 [ĐỒNG BỘ CSDL] Phát hiện {len(removed_paths)} tệp đã bị xóa khỏi đĩa. Đang dọn dẹp CSDL...")
+            self.dedup_pipeline.reload_hashes_from_db()
+            logger.info(f"✓ Đã dọn dẹp thành công {len(removed_paths)} bản ghi và giải phóng bộ nhớ đệm băm.")
+        return len(removed_paths)
+
+    def handle_file_deleted(self, file_path: Path):
+        """
+        Xử lý khi một tệp tài liệu bị xóa trong output_dir hoặc watch_dir.
+        1. Xóa trạng thái trong SQLite.
+        2. Giải phóng bộ nhớ đệm băm.
+        3. Tái xuất hoặc dọn dẹp báo cáo Excel ngày tương ứng.
+        """
+        file_path = file_path.resolve()
+        path_str = str(file_path)
+
+        # 0. Bỏ qua tệp khóa tạm thời hoặc file ẩn của Office / OS
+        if file_path.name.startswith("~$") or file_path.name.startswith("."):
+            return
+
+        # 1. Kiểm tra xem tệp có thực sự từng được lưu trong CSDL SQLite hay không
+        rec = self.state_tracker.get_record(path_str)
+        if not rec:
+            # Nếu tệp không hề nằm trong CSDL đã xử lý, tuyệt đối không kích hoạt xóa hay xuất báo cáo
+            return
+
+        logger.info(f"🗑️ [AUTO-SYNC XÓA TỆP] Nhận diện tệp đã bị xóa: {file_path.name}")
+        file_hash = rec.get("file_hash")
+
+        # 2. Xóa trong SQLite
+        self.state_tracker.delete_state(path_str)
+
+        # 3. Giải phóng bộ nhớ băm
+        self.dedup_pipeline.unregister_file(file_path, file_hash=file_hash)
+
+        # 4. Xác định ngày để cập nhật Excel
+        try:
+            rel = file_path.relative_to(self.output_dir)
+            parts = rel.parts
+            if parts and len(parts[0]) == 8 and parts[0].isdigit():
+                date_str = parts[0]
+                self.export_current_report(date_str=date_str)
+        except (ValueError, Exception) as e:
+            logger.debug(f"Không thể tái xuất báo cáo Excel cho tệp bị xóa {file_path.name}: {e}")
+
+    def handle_directory_deleted(self, dir_path: Path):
+        """
+        Xử lý khi một thư mục bị xóa (ví dụ người dùng xóa cả thư mục ngày 20261001 hoặc cụm dự án).
+        """
+        dir_path = dir_path.resolve()
+        dir_str = str(dir_path)
+
+        # Bỏ qua thư mục tạm hoặc ẩn
+        if dir_path.name.startswith("~$") or dir_path.name.startswith("."):
+            return
+
+        logger.info(f"🗑️ [AUTO-SYNC XÓA THƯ MỤC] Nhận diện thư mục đã bị xóa: {dir_path.name}")
+
+        # 1. Xóa toàn bộ bản ghi có tiền tố dir_str
+        removed = self.state_tracker.delete_records_by_prefix(dir_str)
+
+        # 2. Tải lại bộ nhớ băm từ SQLite sạch
+        if removed:
+            self.dedup_pipeline.reload_hashes_from_db()
+            logger.info(f"✓ Đã dọn dẹp {len(removed)} bản ghi khỏi SQLite cho thư mục {dir_path.name}.")
+
     def run(
         self,
         input_dir: Path = settings.INPUT_DIR,
         output_report: Optional[Path] = None,
         date_str: Optional[str] = None,
     ) -> Optional[Path]:
+        # 0. Tự động đối soát CSDL với đĩa vật lý trước khi quét lô
+        self.reconcile_database_with_disk()
+
         input_dir = Path(input_dir).resolve()
         if not date_str:
             from datetime import datetime

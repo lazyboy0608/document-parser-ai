@@ -161,7 +161,8 @@ class TestBidirectionalDeduplication(unittest.TestCase):
         ws1 = wb["Báo cáo Dầu khí"]
 
         # Tìm ô Trạng thái trùng lặp của tệp gốc (hàng 2)
-        cell_status_orig = ws1.cell(row=2, column=16)
+        dup_col_idx = ExcelExporter.COLUMNS.index("Trạng thái trùng lặp") + 1
+        cell_status_orig = ws1.cell(row=2, column=dup_col_idx)
         self.assertIn("Có bản trùng lặp (với BaoCaoKhaiThac_draft.txt)", str(cell_status_orig.value))
         self.assertIsNotNone(cell_status_orig.comment)
         self.assertIn("CẢNH BÁO TÀI LIỆU GỐC CÓ BẢN PHÁI SINH", cell_status_orig.comment.text)

@@ -275,11 +275,19 @@ def extract_text_from_pdf(
         ratio = alphanumeric_count / max(1, len(meaningful_text))
         junk_count = sum(1 for c in text if c in "~<>\\|`^_{}[]*\ufffd:")
 
+        # Kiểm tra dấu hiệu font ẩn bị lỗi / mojibake khi trang có ảnh scan
+        has_images = len(page.get_images()) > 0
+        has_corrupted_tokens = bool(re.search(r'[a-zA-Z0-9]+[~<>\\|`^_{}\[\]:!][a-zA-Z0-9]+', text))
+        is_corrupted_font = has_images and (
+            (junk_count / max(1, len(text)) > 0.02) or has_corrupted_tokens
+        )
+
         # Một trang được coi là có text số sạch khi có đủ ký tự, tỷ lệ chữ cái tự nhiên cao và ít ký tự rác
         is_clean_digital = (
             len(text) >= min_char_threshold
             and ratio >= 0.65
-            and (junk_count / max(1, len(text)) <= 0.05)
+            and (junk_count / max(1, len(text)) <= 0.02)
+            and not is_corrupted_font
             and text.count("I\n") <= 4
             and text.count("|\n") <= 4
         )

@@ -232,7 +232,56 @@ class StateTracker:
             cursor.execute("DELETE FROM processed_files WHERE file_path = ? OR file_path = ?", (norm_p, str(file_path)))
             conn.commit()
 
-    def cleanup_missing_files(self) -> int:
+    def delete_records_by_prefix(self, dir_path: str) -> list[str]:
+        """Xóa toàn bộ các bản ghi có đường dẫn nằm trong thư mục dir_path."""
+        norm_dir = self._norm(dir_path)
+        prefix1 = norm_dir if norm_dir.endswith(("\\", "/")) else norm_dir + "\\"
+        prefix2 = norm_dir if norm_dir.endswith(("\\", "/")) else norm_dir + "/"
+        prefix_pattern1 = f"{prefix1}%"
+        prefix_pattern2 = f"{prefix2}%"
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT file_path FROM processed_files WHERE file_path LIKE ? OR file_path LIKE ? OR file_path = ?",
+                (prefix_pattern1, prefix_pattern2, norm_dir)
+            )
+            rows = cursor.fetchall()
+            deleted_paths = [r[0] for r in rows]
+            if deleted_paths:
+                cursor.execute(
+                    "DELETE FROM processed_files WHERE file_path LIKE ? OR file_path LIKE ? OR file_path = ?",
+                    (prefix_pattern1, prefix_pattern2, norm_dir)
+                )
+                conn.commit()
+            return deleted_paths
+
+    def get_record(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """Lấy thông tin chi tiết một bản ghi theo đường dẫn tệp."""
+        norm_p = self._norm(file_path)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT file_path, file_hash, simhash, status, is_duplicate, duplicate_of, duplicate_group_id, metadata_json "
+                "FROM processed_files WHERE file_path = ? OR file_path = ?",
+                (norm_p, str(file_path))
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            fp, fhash, shash, st, is_dup, dup_of, dup_gid, mjson = row
+            return {
+                "file_path": fp,
+                "file_hash": fhash,
+                "simhash": shash,
+                "status": st,
+                "is_duplicate": bool(is_dup),
+                "duplicate_of": dup_of,
+                "duplicate_group_id": dup_gid,
+                "metadata": json.loads(mjson) if mjson else {}
+            }
+
+    def cleanup_missing_files(self, return_paths: bool = False):
         """
         Dọn dẹp các bản ghi trong SQLite nếu tệp vật lý không còn tồn tại trên đĩa.
         Có cơ chế bảo vệ Network Accessibility Guard: Chỉ xóa khi phân vùng/thư mục chứa tệp
@@ -242,7 +291,7 @@ class StateTracker:
             cursor = conn.cursor()
             cursor.execute("SELECT file_path FROM processed_files")
             rows = cursor.fetchall()
-            deleted_count = 0
+            deleted_paths = []
             for (fp,) in rows:
                 try:
                     p = Path(fp)
@@ -251,11 +300,11 @@ class StateTracker:
                         continue
                     if not p.exists():
                         cursor.execute("DELETE FROM processed_files WHERE file_path = ?", (fp,))
-                        deleted_count += 1
+                        deleted_paths.append(fp)
                 except Exception:
                     pass
             conn.commit()
-            return deleted_count
+            return deleted_paths if return_paths else len(deleted_paths)
 
     def get_all_completed(self) -> Dict[str, Dict[str, Any]]:
         with sqlite3.connect(self.db_path) as conn:

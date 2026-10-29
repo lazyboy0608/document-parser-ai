@@ -67,7 +67,21 @@ def main():
         action="store_true",
         help="Chế độ chạy riêng Tầng 1: Lọc trùng lặp & liên kết 2 chiều siêu tốc thuần CPU, không gọi AI"
     )
+    parser.add_argument(
+        "--reconcile-db",
+        action="store_true",
+        help="Kiểm tra và tự động dọn dẹp các bản ghi trong SQLite nếu tệp vật lý tương ứng đã bị xóa khỏi đĩa"
+    )
     args = parser.parse_args()
+
+    # Xử lý lệnh đối soát và dọn dẹp CSDL nếu người dùng chỉ định
+    if args.reconcile_db:
+        cand_output = Path("D:/outputNLP")
+        out_d = args.output_dir if args.output_dir else (cand_output if cand_output.exists() else settings.OUTPUT_DIR)
+        pipeline = DocumentPipeline(output_dir=out_d, mode=args.mode)
+        cleaned = pipeline.reconcile_database_with_disk()
+        logger.info(f"Hoàn tất đối soát CSDL: Đã dọn dẹp {cleaned} bản ghi mồ côi không còn tệp trên đĩa.")
+        return
 
     # Xử lý lệnh đồng bộ ngược từ Excel nếu người dùng chỉ định
     if args.sync_excel:

@@ -29,7 +29,6 @@ class ExcelExporter:
         "CONTRACTOR",
         "AUTHOR",
         "LANGUAGE",
-        "DOCUMENT TYPE",
         "ENCL",
         "Encl Name",
         "Độ tin cậy",
@@ -47,7 +46,6 @@ class ExcelExporter:
         "contractor": "CONTRACTOR",
         "author": "AUTHOR",
         "language": "LANGUAGE",
-        "document_type": "DOCUMENT TYPE",
         "encl": "ENCL",
         "encl_name": "Encl Name",
     }
@@ -200,7 +198,6 @@ class ExcelExporter:
             "CONTRACTOR": 20,
             "AUTHOR": 28,
             "LANGUAGE": 14,
-            "DOCUMENT TYPE": 20,
             "ENCL": 8,
             "Encl Name": 48,
             "Độ tin cậy": 14,
@@ -303,7 +300,12 @@ class ExcelExporter:
                 ws_diff.column_dimensions[col_letter].width = width
 
     @classmethod
-    def export(cls, data: List[Dict[str, Any]], output_path: Path) -> Path:
+    def export(
+        cls,
+        data: List[Dict[str, Any]],
+        output_path: Path,
+        allow_backup_on_lock: bool = True,
+    ) -> Path:
         if not data:
             df = pd.DataFrame(columns=cls.COLUMNS)
         else:
@@ -341,7 +343,6 @@ class ExcelExporter:
                     "CONTRACTOR": meta.get("contractor", ""),
                     "AUTHOR": meta.get("author", ""),
                     "LANGUAGE": standardize_language(meta.get("language", "English"), sample_text=sample_txt),
-                    "DOCUMENT TYPE": doc_type_val,
                     "ENCL": meta.get("encl", "No"),
                     "Encl Name": meta.get("encl_name", "None"),
                     "Độ tin cậy": conf_display,
@@ -387,7 +388,9 @@ class ExcelExporter:
         try:
             deployed_path = _do_safe_deploy(output_path)
             return deployed_path
-        except PermissionError:
+        except PermissionError as perm_err:
+            if not allow_backup_on_lock:
+                raise perm_err
             # Nếu file Excel đích đang bị người dùng khác mở khóa trên mạng LAN, lưu bản sao có timestamp
             import datetime
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

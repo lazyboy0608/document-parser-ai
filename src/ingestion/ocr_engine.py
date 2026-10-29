@@ -46,14 +46,14 @@ class OCREngine:
                     raise RuntimeError(f"Không thể khởi tạo mô hình OCR: {e}")
 
     @staticmethod
-    def _sort_polys_reading_order(polys: List[np.ndarray]) -> List[np.ndarray]:
+    def _sort_polys_reading_order(polys: Union[List[np.ndarray], np.ndarray]) -> List[np.ndarray]:
         """
         Sắp xếp các bounding box theo thứ tự đọc tự nhiên 2D của tài liệu:
         - Gom các hộp chữ có độ cao Y tương đồng (cùng một dòng ngang) thành một hàng.
         - Trong mỗi hàng, sắp xếp các hộp chữ từ trái qua phải theo trục X (x_min).
         - Tránh lỗi đảo ngược thứ tự các từ cạnh nhau trên cùng một hàng (như Enclosure 2: <tên>).
         """
-        if not polys:
+        if polys is None or len(polys) == 0:
             return []
 
         boxes = []
@@ -145,7 +145,7 @@ class OCREngine:
                 crop = img_np[y_min:y_max, x_min:x_max]
                 cropped_boxes.append(crop)
 
-        if not cropped_boxes:
+        if len(cropped_boxes) == 0:
             return "", []
 
         # 2. Nhận diện ký tự từng vùng (Text Recognition)

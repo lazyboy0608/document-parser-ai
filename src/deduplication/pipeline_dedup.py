@@ -313,3 +313,23 @@ class DeduplicationPipeline:
         """Đăng ký tệp mới độc nhất vào danh sách tra cứu để các tệp nạp sau đối chiếu."""
         self.active_simhashes[str(final_path)] = simhash_hex
         self.exact_dedup.register_file(final_path, file_hash)
+
+    def unregister_file(self, file_path: Path, file_hash: Optional[str] = None):
+        """Xóa tệp khỏi bộ nhớ đệm băm (Exact Hash và SimHash) khi tệp bị xóa khỏi đĩa."""
+        norm_p = self.state_tracker._norm(str(file_path))
+        self.active_simhashes.pop(norm_p, None)
+        self.active_simhashes.pop(str(file_path), None)
+        target_name = file_path.name
+        for p in list(self.active_simhashes.keys()):
+            if Path(p).name == target_name:
+                self.active_simhashes.pop(p, None)
+        self.exact_dedup.unregister_file(file_path, file_hash=file_hash)
+
+    def reload_hashes_from_db(self):
+        """Tải lại toàn bộ danh bạ mã băm từ SQLite để đồng bộ tuyệt đối với đĩa vật lý."""
+        self.active_simhashes = self.state_tracker.get_active_simhashes()
+        self.exact_dedup.seen_hashes.clear()
+        self.exact_dedup.hash_to_path.clear()
+        for fhash, fp in self.state_tracker.get_active_exact_hashes().items():
+            self.exact_dedup.seen_hashes.add(fhash)
+            self.exact_dedup.hash_to_path[fhash] = fp

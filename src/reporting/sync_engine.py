@@ -225,10 +225,22 @@ class ExcelSyncEngine:
 
         # Tái xuất lại file Excel để xóa các ô viền cam và cập nhật điểm số mới
         if results["updated_files_count"] > 0 and date_str:
-            from src.pipeline import DocumentPipeline
-            pipeline = DocumentPipeline(output_dir=self.output_dir, db_path=self.db_path)
-            reexported = pipeline.export_current_report(date_str=date_str, output_report=excel_path)
-            results["reexported_excel"] = reexported
-            logger.info(f"📊 Đã làm mới báo cáo Excel sau đồng bộ: {reexported}")
+            try:
+                from src.pipeline import DocumentPipeline
+                pipeline = DocumentPipeline(output_dir=self.output_dir, db_path=self.db_path)
+                reexported = pipeline.export_current_report(
+                    date_str=date_str,
+                    output_report=excel_path,
+                    allow_backup_on_lock=False
+                )
+                results["reexported_excel"] = reexported
+                logger.info(f"📊 Đã làm mới báo cáo Excel sau đồng bộ: {reexported}")
+            except PermissionError:
+                logger.info(
+                    f"ℹ️ [AUTO-SYNC] File Excel '{excel_path.name}' hiện đang được mở bởi ứng dụng khác. "
+                    f"Dữ liệu cập nhật đã được lưu trữ an toàn 100% vào CSDL SQLite và sẽ hiển thị trên Excel khi đóng tệp hoặc trong đợt xuất tiếp theo."
+                )
+            except Exception as e:
+                logger.warning(f"Không thể làm mới báo cáo Excel sau đồng bộ: {e}")
 
         return results

@@ -122,7 +122,8 @@ class TestDocumentDiff(unittest.TestCase):
 
         # 1. Kiểm tra Sheet 1: có Hover comment ở ô Trạng thái trùng lặp
         ws1 = wb["Báo cáo Dầu khí"]
-        dup_cell = ws1.cell(row=3, column=16)  # Row 3 là Báo cáo chính thức-draft.docx, cột 16 là Trạng thái trùng lặp
+        dup_col_idx = ExcelExporter.COLUMNS.index("Trạng thái trùng lặp") + 1
+        dup_cell = ws1.cell(row=3, column=dup_col_idx)  # Row 3 là Báo cáo chính thức-draft.docx
         self.assertIn("Gần trùng lặp", str(dup_cell.value))
         self.assertIsNotNone(dup_cell.comment)
         self.assertIn("AI Diff", dup_cell.comment.text)

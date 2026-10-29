@@ -7,13 +7,13 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
     OLLAMA_MODEL: str = "qwen2.5:3b"
     VLM_MODEL: str = "qwen2.5vl:3b"
-    ENABLE_HYBRID_VLM: bool = True
+    ENABLE_HYBRID_VLM: bool = False
     OLLAMA_TIMEOUT: int = 180
 
     # Ollama Performance Tuning (Tối ưu cho CPU Core i3 4 luồng)
     OLLAMA_NUM_THREAD: int = 4
     OLLAMA_NUM_CTX: int = 2048
-    OLLAMA_NUM_PREDICT: int = 256
+    OLLAMA_NUM_PREDICT: int = 1536
 
     # OCR Model Options (Ưu tiên Mobile cho môi trường CPU)
     OCR_DET_MODEL: str = "PP-OCRv5_mobile_det"

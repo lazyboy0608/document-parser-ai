@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.utils.logger import logger
+from src.extraction.domain_cleaner import is_missing_or_unknown_phrase
 
 
 def sanitize_folder_name(name: str, max_length: int = 50) -> str:
@@ -11,7 +12,7 @@ def sanitize_folder_name(name: str, max_length: int = 50) -> str:
     Chuẩn hóa chuỗi để làm tên thư mục hợp lệ trên Windows (loại bỏ ký tự cấm: \\ / : * ? \" < > |).
     Tự động chuẩn hóa các giá trị rỗng, N/A hoặc chuỗi tiếng Trung về 'Unknown'.
     """
-    if not name:
+    if not name or is_missing_or_unknown_phrase(name):
         return "Unknown"
     name_str = name.strip()
     if name_str.lower() in {"", "chưa rõ", "none", "null", "n/a", "na", "unknown", "chua_ro", "chua_phan_loai"}:
@@ -47,18 +48,18 @@ def resolve_cluster_folder_name(
 
     # 2. Ưu tiên Lô / Mỏ / Dự án / Hợp đồng
     c_clean = str(contract_name or "").strip()
-    if c_clean and c_clean.lower() not in {"n/a", "none", "chưa rõ", "unknown", "nan", "null", ""}:
+    if c_clean and not is_missing_or_unknown_phrase(c_clean):
         return sanitize_folder_name(c_clean)
 
     # 3. Ưu tiên Giếng khoan
     w_clean = str(well_link or "").strip()
-    if w_clean and w_clean.lower() not in {"n/a", "none", "chưa rõ", "unknown", "nan", "null", ""}:
+    if w_clean and not is_missing_or_unknown_phrase(w_clean):
         prefix = "" if any(w_clean.upper().startswith(k) for k in ["WELL", "LK", "SKV", "BLOCK"]) else "Well_"
         return sanitize_folder_name(f"{prefix}{w_clean}")
 
     # 4. Ưu tiên Đơn vị ban hành lớn
     o_clean = str(originator or "").strip()
-    if o_clean and o_clean.lower() not in {"n/a", "none", "chưa rõ", "unknown", "nan", "null", ""}:
+    if o_clean and not is_missing_or_unknown_phrase(o_clean):
         return sanitize_folder_name(o_clean)
 
     # 5. Fallback về Thể loại tài liệu hoặc Thư mục chung
