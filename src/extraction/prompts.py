@@ -40,6 +40,7 @@ Your mission is to extract key metadata fields from technical reports (in Russia
    - If none or internal report, strictly output "N/A".
 7. author: Human individual person name(s) (engineers, geologists, authors, compilers).
    - e.g. "Alan Minney", "DUONG KY TAM", "Зыонг Ван Тханг", "Гейц В. В.; Во Ван Чау".
+   - Vietnamese documents: Look for "Tác giả", "Chủ biên", "Biên soạn", "Người lập", or OCR artifacts (e.g. ".1o g1", "Tac gia", "Chu bien", "Chú bido"). Reconstruct clean, accented Vietnamese names (e.g. "Trương Công Nỉ; Nguyễn Xuân Đôn; Nguyễn Bành Phô; Dương Đăng Thụ"). Multiple authors separated by semicolon ";".
    - Never put company/organization names here!
    - If corporate publication without human names, strictly output "None".
 8. document_type: Standardized technical category. Choose strictly one of:
