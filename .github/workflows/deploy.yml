@@ -24,7 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Thực thi Toàn bộ Test Suite (24 Tests)
+      - name: Thực thi Toàn bộ Test Suite (30 Tests)
         run: |
           python -m unittest discover tests
 

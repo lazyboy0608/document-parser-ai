@@ -104,6 +104,19 @@ class ExcelSyncEngine:
                     )
                     row_db = cursor.fetchone()
 
+                    # Fallback tra cứu đường dẫn đã resolve (đặc biệt cho Windows 8.3 short paths như RUNNER~1)
+                    if not row_db:
+                        try:
+                            resolved_val = str(Path(file_path_val).resolve())
+                            if resolved_val != file_path_val:
+                                cursor.execute(
+                                    "SELECT file_path, is_duplicate, metadata_json, file_hash FROM processed_files WHERE file_path = ?",
+                                    (resolved_val,)
+                                )
+                                row_db = cursor.fetchone()
+                        except Exception:
+                            pass
+
                 if not row_db and file_name_val:
                     cursor.execute(
                         "SELECT file_path, is_duplicate, metadata_json, file_hash FROM processed_files WHERE file_path LIKE ?",

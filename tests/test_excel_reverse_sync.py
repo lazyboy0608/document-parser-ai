@@ -15,7 +15,7 @@ from src.utils.state_tracker import StateTracker
 class TestExcelReverseSync(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.base_path = Path(self.temp_dir.name)
+        self.base_path = Path(self.temp_dir.name).resolve()
         self.db_path = self.base_path / "test_pipeline.db"
         self.output_dir = self.base_path / "output"
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -96,7 +96,7 @@ class TestExcelReverseSync(unittest.TestCase):
         # 4. Kiểm tra CSDL SQLite đã cập nhật
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT metadata_json FROM processed_files WHERE file_path = ?", (str(file_path),))
+            cur.execute("SELECT metadata_json FROM processed_files WHERE file_path = ?", (str(file_path.resolve()),))
             row = cur.fetchone()
             self.assertIsNotNone(row)
             updated_meta = json.loads(row[0])
@@ -164,8 +164,10 @@ class TestExcelReverseSync(unittest.TestCase):
 
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT metadata_json FROM processed_files WHERE file_path = ?", (str(file_path),))
-            updated_meta = json.loads(cur.fetchone()[0])
+            cur.execute("SELECT metadata_json FROM processed_files WHERE file_path = ?", (str(file_path.resolve()),))
+            row = cur.fetchone()
+            self.assertIsNotNone(row)
+            updated_meta = json.loads(row[0])
             self.assertEqual(updated_meta["author"], "Nguyễn Thị Mai (Trưởng phòng)")
             self.assertEqual(updated_meta["field_confidences"]["author"], 100.0)
             self.assertIn("author", updated_meta["verified_fields"])
@@ -233,7 +235,7 @@ class TestExcelReverseSync(unittest.TestCase):
         # Kiểm tra DB lưu đúng đường dẫn mới
         with sqlite3.connect(self.db_path) as conn:
             cur = conn.cursor()
-            cur.execute("SELECT file_path, metadata_json FROM processed_files WHERE file_path = ?", (str(expected_new_path),))
+            cur.execute("SELECT file_path, metadata_json FROM processed_files WHERE file_path = ?", (str(expected_new_path.resolve()),))
             row = cur.fetchone()
             self.assertIsNotNone(row)
             meta = json.loads(row[1])
