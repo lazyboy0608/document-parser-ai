@@ -191,11 +191,22 @@ class DeduplicationPipeline:
             return DedupResult(is_duplicate=False, file_hash=file_hash)
 
         # 3. Tính SimHash 64-bit và so sánh khoảng cách Hamming
-        simhash_hex = self.simhash_dedup.compute_simhash(raw_text)
-        is_semantic_dup, matched_orig, simhash_dist = self.simhash_dedup.find_near_duplicate(
-            simhash_hex, self.active_simhashes
-        )
-        sim_pct = self.simhash_dedup.similarity_percentage(simhash_dist)
+        if not self.simhash_dedup.is_valid_for_simhash(raw_text):
+            logger.info(
+                f"Văn bản trích xuất từ '{file_path.name}' rỗng hoặc quá ngắn "
+                f"({len(raw_text.strip()) if raw_text else 0} ký tự) -> Bỏ qua kiểm tra gần trùng SimHash."
+            )
+            simhash_hex = ""
+            is_semantic_dup = False
+            matched_orig = None
+            simhash_dist = 64
+            sim_pct = 0.0
+        else:
+            simhash_hex = self.simhash_dedup.compute_simhash(raw_text)
+            is_semantic_dup, matched_orig, simhash_dist = self.simhash_dedup.find_near_duplicate(
+                simhash_hex, self.active_simhashes
+            )
+            sim_pct = self.simhash_dedup.similarity_percentage(simhash_dist)
 
         if is_semantic_dup and matched_orig:
             semantic_orig_name = Path(matched_orig).name
@@ -311,7 +322,8 @@ class DeduplicationPipeline:
 
     def register_new_unique_file(self, final_path: Path, file_hash: str, simhash_hex: str):
         """Đăng ký tệp mới độc nhất vào danh sách tra cứu để các tệp nạp sau đối chiếu."""
-        self.active_simhashes[str(final_path)] = simhash_hex
+        if simhash_hex:
+            self.active_simhashes[str(final_path)] = simhash_hex
         self.exact_dedup.register_file(final_path, file_hash)
 
     def unregister_file(self, file_path: Path, file_hash: Optional[str] = None):

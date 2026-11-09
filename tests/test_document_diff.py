@@ -67,11 +67,49 @@ class TestDocumentDiff(unittest.TestCase):
         )
 
         self.assertIn("summary", res)
-        self.assertEqual(res["similarity_pct"], 96.5)
+        self.assertLessEqual(res["similarity_pct"], 99.9)
+        self.assertGreater(res["similarity_pct"], 80.0)
         self.assertGreater(res["added_count"], 0)
         self.assertTrue(len(res["added_snippets"]) > 0)
         self.assertEqual(res["duplicate_file"], "Báo cáo draft.docx")
         self.assertEqual(res["original_file"], "Báo cáo gốc.pdf")
+
+    def test_diff_similarity_not_100_when_modified(self):
+        """
+        Kiểm tra khắc phục Note 2:
+        Khi tài liệu nháp chỉ sửa 3 câu văn (khoảng cách SimHash = 0 -> sim_pct ban đầu = 100.0%),
+        nhưng DocumentDiffAnalyzer phát hiện có đoạn thêm mới/cắt bỏ thì similarity_pct
+        phải nhỏ hơn 100.0% (ví dụ: 98.x% - 99.9%) chứ không được báo 100.0%.
+        """
+        base_paragraphs = [
+            f"Đoạn văn số {i}: Đánh giá hiện trạng địa chất công trình và các tầng chứa dầu khí tại mỏ Bạch Hổ."
+            for i in range(1, 25)
+        ]
+        orig_text = "\n\n".join(base_paragraphs)
+
+        # Tạo bản nháp sửa 3 câu văn
+        dup_paragraphs = list(base_paragraphs)
+        dup_paragraphs[2] = "Đoạn văn số 3 ĐÃ SỬA: Bổ sung khảo sát địa chấn 3D tầng Oligoxen."
+        dup_paragraphs[7] = "Đoạn văn số 8 ĐÃ SỬA: Cập nhật thông số áp suất vỉa mới nhất năm 2026."
+        dup_paragraphs[15] = "Đoạn văn số 16 ĐÃ SỬA: Điều chỉnh kế hoạch khoan giếng phụ BK-20."
+        dup_text = "\n\n".join(dup_paragraphs)
+
+        analyzer = DocumentDiffAnalyzer(llm_extractor=None)
+        res = analyzer.analyze_diff(
+            orig_text=orig_text,
+            dup_text=dup_text,
+            orig_name="BaoCaoGoc.docx",
+            dup_name="BaoCaoSuaDoi.docx",
+            sim_pct=100.0,  # Giả lập SimHash 64-bit cho ra 100.0% do lệch 0 bit
+        )
+
+        self.assertGreater(res["added_count"], 0)
+        self.assertGreater(res["deleted_count"], 0)
+        # Khẳng định quan trọng: Không được phép là 100.0%!
+        self.assertLess(res["similarity_pct"], 100.0)
+        self.assertGreater(res["similarity_pct"], 80.0)
+        # Tóm tắt AI không chứa '100.0%'
+        self.assertNotIn("100.0%", res["summary"])
 
     def test_excel_diff_sheet_export(self):
         """Kiểm tra xuất Excel 2 sheet: Sheet 1 (Hover comment) và Sheet 2 (Đối chiếu Trùng lặp)."""

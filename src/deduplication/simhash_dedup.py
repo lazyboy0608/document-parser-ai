@@ -8,6 +8,8 @@ except ImportError:
     HAS_SIMHASH_PKG = False
     import hashlib
 
+MIN_SIMHASH_CHARS = 50  # Ngưỡng ký tự có nghĩa tối thiểu để kích hoạt SimHash
+
 
 def get_character_shingles(text: str, k: int = 4) -> List[str]:
     """
@@ -19,7 +21,7 @@ def get_character_shingles(text: str, k: int = 4) -> List[str]:
     text_clean = re.sub(r"---\s*\[.*?\]\s*---", "", text, flags=re.IGNORECASE)
     cleaned = re.sub(r"[\s\W_]+", "", text_clean.lower())
     if len(cleaned) < k:
-        return [cleaned] if cleaned else ["empty"]
+        return [cleaned] if cleaned else []
     return [cleaned[i:i + k] for i in range(len(cleaned) - k + 1)]
 
 
@@ -31,15 +33,34 @@ class SimHashDeduplicator:
     - Ngưỡng mặc định: threshold_bits = 3 (Khoảng cách Hamming <= 3 / 64 bits tương đương độ tương đồng >= 95%).
     """
 
-    def __init__(self, threshold_bits: int = 3, shingle_size: int = 4):
+    def __init__(self, threshold_bits: int = 3, shingle_size: int = 4, min_chars: int = MIN_SIMHASH_CHARS):
         self.threshold_bits = threshold_bits
         self.shingle_size = shingle_size
+        self.min_chars = min_chars
+
+    def is_valid_for_simhash(self, text: str, min_chars: Optional[int] = None) -> bool:
+        """
+        Kiểm tra văn bản có đủ độ dài và ký tự có nghĩa để tính toán SimHash không.
+        Loại trừ các tệp rỗng, PDF trắng, hoặc PDF scan mờ không đọc được chữ.
+        """
+        if not text or not isinstance(text, str):
+            return False
+        limit = min_chars if min_chars is not None else self.min_chars
+        text_clean = re.sub(r"---\s*\[.*?\]\s*---", "", text, flags=re.IGNORECASE)
+        cleaned = re.sub(r"[\s\W_]+", "", text_clean)
+        return len(cleaned) >= limit
 
     def compute_simhash(self, text: str) -> str:
         """
         Tính toán mã SimHash 64-bit của chuỗi văn bản và trả về chuỗi Hex 16 ký tự.
+        Nếu văn bản rỗng hoặc không đủ ngưỡng ký tự có nghĩa tối thiểu, trả về chuỗi rỗng "".
         """
+        if not self.is_valid_for_simhash(text):
+            return ""
+
         shingles = get_character_shingles(text, k=self.shingle_size)
+        if not shingles:
+            return ""
         
         if HAS_SIMHASH_PKG:
             # Sử dụng thư viện simhash chính thức

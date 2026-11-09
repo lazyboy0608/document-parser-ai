@@ -135,11 +135,26 @@ class DocumentDiffAnalyzer:
         sorted_deleted = sorted(deleted_chunks, key=_del_novelty_key, reverse=True)
         top_deleted = sorted_deleted[:3] if sorted_deleted else []
 
-        # Tạo tóm tắt AI
+        # Chuẩn hóa tỷ lệ tương đồng chi tiết (tránh hiển thị 100.0% khi đã có đoạn sai khác)
+        if not added_chunks and not deleted_chunks:
+            effective_sim_pct = 100.0
+        else:
+            char_matcher = difflib.SequenceMatcher(None, orig_text.strip(), dup_text.strip())
+            char_ratio = round(char_matcher.ratio() * 100.0, 1)
+            # Nếu SimHash 64-bit cho ra 100% (do Hamming distance = 0 khi tài liệu dài chỉ sửa vài câu),
+            # sử dụng tỷ lệ so khớp ký tự thực tế từ SequenceMatcher
+            if sim_pct >= 100.0:
+                effective_sim_pct = min(char_ratio, 99.9)
+            else:
+                effective_sim_pct = min(char_ratio if char_ratio < 100.0 else sim_pct, 99.9)
+            # Luôn chặn trần 99.9% nếu phát hiện có đoạn thêm/bớt để phản ánh đúng thực tế
+            effective_sim_pct = min(effective_sim_pct, 99.9)
+
+        # Tạo tóm tắt AI với độ tương đồng chuẩn xác
         ai_summary = self.generate_ai_summary(
             added_chunks=sorted_added,
             deleted_chunks=sorted_deleted,
-            sim_pct=sim_pct,
+            sim_pct=effective_sim_pct,
             orig_name=orig_name,
             dup_name=dup_name
         )
@@ -147,7 +162,7 @@ class DocumentDiffAnalyzer:
         return {
             "duplicate_file": dup_name,
             "original_file": orig_name,
-            "similarity_pct": sim_pct,
+            "similarity_pct": effective_sim_pct,
             "summary": ai_summary,
             "added_count": len(added_chunks),
             "deleted_count": len(deleted_chunks),

@@ -177,6 +177,38 @@ class TestBidirectionalDeduplication(unittest.TestCase):
 
         wb.close()
 
+    def test_empty_or_short_text_skips_simhash(self):
+        """
+        Kiểm tra loại trừ văn bản rỗng / quá ngắn khỏi SimHash:
+        - Tệp A là PDF trắng / scan không có chữ.
+        - Tệp B là tệp khác cũng không có chữ (SHA-256 khác A).
+        - B không được coi là gần trùng lặp với A (lệch 0 bit SimHash rỗng).
+        """
+        # 1. Tệp A: Văn bản rỗng
+        file_a = self.test_dir / "Empty_PDF_Scan.txt"
+        file_a.write_text("   \n\t  \n", encoding="utf-8")
+
+        res_a = self.dedup_pipeline.process(file_a, date_str="20261023")
+        self.assertFalse(res_a.is_duplicate)
+        self.assertEqual(res_a.simhash_hex, "")
+
+        # Giả lập đăng ký hoàn tất tệp A
+        self.dedup_pipeline.register_new_unique_file(
+            res_a.final_path, res_a.file_hash, res_a.simhash_hex
+        )
+        # Đảm bảo mã SimHash rỗng không được thêm vào active_simhashes
+        self.assertNotIn(str(res_a.final_path), self.dedup_pipeline.active_simhashes)
+
+        # 2. Tệp B: Tệp khác cũng không đọc được chữ (khác SHA-256 với A)
+        file_b = self.test_dir / "Another_Blank_Document.txt"
+        file_b.write_text("--- [Trang 1: Bìa Scan] ---\n...", encoding="utf-8")
+
+        res_b = self.dedup_pipeline.process(file_b, date_str="20261023")
+        # Khẳng định: B KHÔNG bị nhận nhầm là trùng lặp của A!
+        self.assertFalse(res_b.is_duplicate)
+        self.assertIsNone(res_b.matched_orig_name)
+        self.assertIsNone(res_b.target_path)
+
 
 if __name__ == "__main__":
     unittest.main()
