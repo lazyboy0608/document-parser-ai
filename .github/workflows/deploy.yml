@@ -8,15 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       enable_cd:
-        description: 'Bật triển khai CD lên máy chủ vật lý (true/false)'
+        description: 'Bật triển khai CD lên máy chủ vật lý'
         required: true
-        default: 'false'
+        default: false
         type: boolean
-
-# Biến môi trường điều khiển triển khai CD (mặc định 'false' khi đang phát triển/chưa dựng server)
-# Đổi thành 'true' khi đã cài đặt Self-Hosted Runner trên Windows Server thật.
-env:
-  ENABLE_CD: 'false'
 
 jobs:
   # GIAI ĐOẠN 1: KIỂM THỬ TỰ ĐỘNG (CI)
@@ -36,23 +31,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Thực thi Toàn bộ Test Suite (30 Tests)
+      - name: Thực thi Toàn bộ Test Suite
         run: |
           python -m unittest discover tests
 
   # GIAI ĐOẠN 2: TRIỂN KHAI TỰ ĐỘNG LÊN MÁY CHỦ VẬT LÝ (CD)
-  # Chỉ chạy khi:
-  # 1. Nhánh main được push VÀ cờ ENABLE_CD == 'true' (hoặc trigger thủ công qua workflow_dispatch với enable_cd == true)
-  # 2. Hoặc khi tạo tag phiên bản phát hành (release tag, ví dụ v1.0.0)
+  # - CỜ BẬT/TẮT: Hiện tại đặt 'false' để push commit thông thường CHỈ CHẠY CI, tự động bỏ qua (Skip) CD
+  #   tránh bị treo 'Waiting for a runner to pick up this job'.
+  # - Khi nào triển khai server thật: Chỉ cần đổi 'false' thành 'true' ở biểu thức if dưới đây.
   continuous_deployment:
     needs: continuous_integration
-    if: >
-      github.ref == 'refs/heads/main' &&
-      (
-        env.ENABLE_CD == 'true' ||
-        github.event.inputs.enable_cd == 'true' ||
-        startsWith(github.ref, 'refs/tags/v')
-      )
+    if: >-
+      (false && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.enable_cd == true) ||
+      startsWith(github.ref, 'refs/tags/v')
     runs-on: self-hosted  # Chạy trực tiếp trên Windows Server vật lý
     steps:
       - name: Cập nhật Mã nguồn mới nhất
